@@ -3,21 +3,17 @@ import { SESSION_SECRET } from '$env/static/private'
 
 const secret = new TextEncoder().encode(SESSION_SECRET)
 
-export async function createSession(dhanClientId: string, name: string, tokenExpiry: string) {
-	return new SignJWT({ dhanClientId, name, tokenExpiry })
+export async function createSession(userId: string) {
+	return new SignJWT({ userId })
 		.setProtectedHeader({ alg: 'HS256' })
 		.setExpirationTime('30d')
 		.sign(secret)
 }
 
-export async function verifySession(token: string): Promise<{ dhanClientId: string; name: string; tokenExpiry: string } | null> {
+export async function verifySession(token: string): Promise<{ userId: string } | null> {
 	try {
 		const { payload } = await jwtVerify(token, secret)
-		return {
-			dhanClientId: payload.dhanClientId as string,
-			name: payload.name as string,
-			tokenExpiry: payload.tokenExpiry as string,
-		}
+		return { userId: payload.userId as string }
 	} catch {
 		return null
 	}

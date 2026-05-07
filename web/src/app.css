@@ -7,4 +7,38 @@
 body {
 	font-family: 'Inter', sans-serif;
 	-webkit-font-smoothing: antialiased;
+	background: var(--bg);
+	color: var(--text);
+}
+
+:root {
+	--green: #00c278;
+	--green-hover: #00a866;
+	--red: #f87171;
+	--red-bg: #1c0a0a;
+	--red-muted: #fca5a5;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #0f172a;
+		--bg-surface: #1e293b;
+		--border: #334155;
+		--text: #f1f5f9;
+		--text-muted: #64748b;
+		--text-subtle: #94a3b8;
+		--text-faint: #475569;
+	}
+}
+
+@media (prefers-color-scheme: light) {
+	:root {
+		--bg: #f8fafc;
+		--bg-surface: #ffffff;
+		--border: #e2e8f0;
+		--text: #0f172a;
+		--text-muted: #64748b;
+		--text-subtle: #475569;
+		--text-faint: #94a3b8;
+	}
 }

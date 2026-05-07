@@ -1,7 +1,9 @@
 import { writable } from 'svelte/store'
 
 export const user = writable<{
-	dhanClientId: string
+	id: string
+	email: string
 	name: string
-	tokenExpiry: string
 } | null>(null)
+
+export const brokerConnected = writable<boolean>(false)
