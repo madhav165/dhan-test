@@ -9,6 +9,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/madhav165/dhan-test/go/internal/broker"
 	"github.com/madhav165/dhan-test/go/internal/db"
+	"github.com/madhav165/dhan-test/go/internal/market"
 )
 
 func main() {
@@ -32,8 +33,15 @@ func main() {
 		InternalSecret: os.Getenv("INTERNAL_SECRET"),
 	}
 
+	mh := &market.Handler{
+		DB:            database,
+		EncryptionKey: key,
+		DhanBaseURL:   os.Getenv("DHAN_BASE_URL"),
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /internal/broker-token", h.StoreToken)
+	mh.RegisterRoutes(mux)
 
 	port := os.Getenv("GO_PORT")
 	if port == "" {
