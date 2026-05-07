@@ -3,6 +3,9 @@
 *.pem
 *.key
 
+# Certs
+certs/
+
 # Python
 __pycache__/
 *.py[cod]

@@ -1,6 +1,5 @@
 import { redirect } from '@sveltejs/kit'
-import { DHAN_APP_ID, DHAN_APP_SECRET, DHAN_AUTH_URL } from '$env/static/private'
-import { db } from '$lib/server/db'
+import { DHAN_APP_ID, DHAN_APP_SECRET, DHAN_AUTH_URL, GO_URL, INTERNAL_SECRET } from '$env/static/private'
 import type { RequestHandler } from './$types'
 
 export const GET: RequestHandler = async ({ url, cookies, locals }) => {
@@ -18,19 +17,23 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 
 	if (!resp.ok) redirect(302, '/?error=dhan_auth_failed')
 
-	const { dhanClientId, accessToken, expiryTime } = await resp.json()
+	const { dhanClientId, accessToken } = await resp.json()
 
-	// Store broker connection — token encryption will be added with Go service
-	await db.query(
-		`insert into broker_connections (user_id, broker, client_id, encrypted_token, token_date, is_active)
-		 values ($1, 'dhan', $2, $3, current_date, true)
-		 on conflict (user_id, broker) do update
-		 set client_id = excluded.client_id,
-		     encrypted_token = excluded.encrypted_token,
-		     token_date = excluded.token_date,
-		     is_active = true`,
-		[locals.user.id, dhanClientId, accessToken]
-	)
+	const goResp = await fetch(`${GO_URL}/internal/broker-token`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'X-Internal-Secret': INTERNAL_SECRET,
+		},
+		body: JSON.stringify({
+			user_id: locals.user.id,
+			broker: 'dhan',
+			client_id: dhanClientId,
+			token: accessToken,
+		}),
+	})
+
+	if (!goResp.ok) redirect(302, '/?error=dhan_auth_failed')
 
 	cookies.delete('dhan_consent', { path: '/' })
 	redirect(302, '/')
