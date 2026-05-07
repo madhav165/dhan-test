@@ -42,3 +42,4 @@ scratch/
 *.swp
 *.swo
 .DS_Store
+builder/target/
