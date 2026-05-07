@@ -141,7 +141,7 @@ type candleResp struct {
 	Low       []float64 `json:"low"`
 	Close     []float64 `json:"close"`
 	Volume    []float64 `json:"volume"`
-	Timestamp []int64   `json:"timestamp"`
+	Timestamp []float64 `json:"timestamp"`
 }
 
 func (w *Worker) fetchAndStore(clientID, accessToken, secID, seg, interval, fromDate, toDate string) error {
@@ -245,7 +245,7 @@ func (w *Worker) upsertCandles(secID, seg, interval string, c candleResp) error 
 
 	for i := range c.Close {
 		_, err := stmt.Exec(secID, seg, interval,
-			c.Timestamp[i],
+			int64(c.Timestamp[i]),
 			c.Open[i], c.High[i], c.Low[i], c.Close[i], int64(c.Volume[i]))
 		if err != nil {
 			return err
