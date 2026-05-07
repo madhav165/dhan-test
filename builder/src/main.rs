@@ -3,6 +3,7 @@ use std::fs;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
+use rayon::prelude::*;
 use tokio_postgres::NoTls;
 use aws_sdk_s3::{Client as S3Client, config::Builder as S3Builder, config::BehaviorVersion};
 use aws_credential_types::Credentials;
@@ -258,7 +259,92 @@ async fn process_run_job(
 
     let wasm = download(s3, bucket, &wasm_key).await?;
 
-    // Collect parquet columns across all instruments
+    // Fetch all candle data async first
+    struct InstCandles {
+        security_id: String,
+        exchange_segment: String,
+        timestamps: Vec<i64>,
+        opens: Vec<f64>,
+        highs: Vec<f64>,
+        lows: Vec<f64>,
+        closes: Vec<f64>,
+        volumes: Vec<i64>,
+    }
+
+    let mut inst_candles: Vec<InstCandles> = vec![];
+    for row in &inst_rows {
+        let security_id: String = row.get::<_, &str>(0).to_string();
+        let exchange_segment: String = row.get::<_, &str>(1).to_string();
+
+        let candle_rows = db.query(
+            "select extract(epoch from timestamp)::bigint, open::float8, high::float8, \
+                    low::float8, close::float8, volume \
+             from candles \
+             where security_id=$1 and exchange_segment=$2 and interval=$3 \
+             and timestamp::date between $4::text::date and $5::text::date \
+             order by timestamp",
+            &[&security_id.as_str(), &exchange_segment.as_str(), &interval, &from_date, &to_date],
+        ).await.map_err(|e| e.to_string())?;
+
+        if candle_rows.is_empty() { continue; }
+
+        let mut ic = InstCandles {
+            security_id, exchange_segment,
+            timestamps: vec![], opens: vec![], highs: vec![],
+            lows: vec![], closes: vec![], volumes: vec![],
+        };
+        for r in &candle_rows {
+            ic.timestamps.push(r.get(0));
+            ic.opens.push(r.get(1));
+            ic.highs.push(r.get(2));
+            ic.lows.push(r.get(3));
+            ic.closes.push(r.get(4));
+            ic.volumes.push(r.get(5));
+        }
+        inst_candles.push(ic);
+    }
+
+    if inst_candles.is_empty() {
+        return Err("no candles found in DB for any instrument".to_string());
+    }
+
+    // Parallel WASM execution across instruments
+    struct InstResult {
+        security_id: String,
+        exchange_segment: String,
+        timestamps: Vec<i64>,
+        opens: Vec<f64>,
+        highs: Vec<f64>,
+        lows: Vec<f64>,
+        closes: Vec<f64>,
+        volumes: Vec<i64>,
+        signals: Vec<u8>,
+        metrics: Metrics,
+    }
+
+    let results: Result<Vec<InstResult>, String> = inst_candles
+        .into_par_iter()
+        .map(|ic| {
+            let signals = run_wasm(&wasm, &ic.closes)?;
+            let metrics = compute_metrics(&ic.closes, &signals);
+            Ok(InstResult {
+                security_id: ic.security_id,
+                exchange_segment: ic.exchange_segment,
+                timestamps: ic.timestamps,
+                opens: ic.opens,
+                highs: ic.highs,
+                lows: ic.lows,
+                closes: ic.closes,
+                volumes: ic.volumes,
+                signals,
+                metrics,
+            })
+        })
+        .collect();
+
+    let results = results?;
+
+    // Aggregate
     let mut col_sec: Vec<String> = vec![];
     let mut col_seg: Vec<String> = vec![];
     let mut col_ts: Vec<i64> = vec![];
@@ -268,68 +354,26 @@ async fn process_run_job(
     let mut col_close: Vec<f64> = vec![];
     let mut col_vol: Vec<i64> = vec![];
     let mut col_sig: Vec<u8> = vec![];
-
     let mut total_trades = 0i32;
     let mut total_wins = 0i32;
     let mut total_pnl = 0.0f64;
     let mut max_drawdown = 0.0f64;
 
-    for row in &inst_rows {
-        let security_id: &str = row.get(0);
-        let exchange_segment: &str = row.get(1);
-
-        let candle_rows = db.query(
-            "select extract(epoch from timestamp)::bigint, open::float8, high::float8, \
-                    low::float8, close::float8, volume \
-             from candles \
-             where security_id=$1 and exchange_segment=$2 and interval=$3 \
-             and timestamp::date between $4::text::date and $5::text::date \
-             order by timestamp",
-            &[&security_id, &exchange_segment, &interval, &from_date, &to_date],
-        ).await.map_err(|e| e.to_string())?;
-
-        if candle_rows.is_empty() {
-            continue;
-        }
-
-        let mut timestamps: Vec<i64> = vec![];
-        let mut opens: Vec<f64> = vec![];
-        let mut highs: Vec<f64> = vec![];
-        let mut lows: Vec<f64> = vec![];
-        let mut closes: Vec<f64> = vec![];
-        let mut volumes: Vec<i64> = vec![];
-
-        for r in &candle_rows {
-            timestamps.push(r.get(0));
-            opens.push(r.get(1));
-            highs.push(r.get(2));
-            lows.push(r.get(3));
-            closes.push(r.get(4));
-            volumes.push(r.get(5));
-        }
-
-        let signals = run_wasm(&wasm, &closes)?;
-        let m = compute_metrics(&closes, &signals);
-
-        total_trades += m.num_trades;
-        total_wins += (m.win_rate * m.num_trades as f64).round() as i32;
-        total_pnl += m.total_pnl;
-        if m.max_drawdown > max_drawdown { max_drawdown = m.max_drawdown; }
-
-        let n = closes.len();
-        col_sec.extend(std::iter::repeat(security_id.to_string()).take(n));
-        col_seg.extend(std::iter::repeat(exchange_segment.to_string()).take(n));
-        col_ts.extend_from_slice(&timestamps);
-        col_open.extend_from_slice(&opens);
-        col_high.extend_from_slice(&highs);
-        col_low.extend_from_slice(&lows);
-        col_close.extend_from_slice(&closes);
-        col_vol.extend_from_slice(&volumes);
-        col_sig.extend_from_slice(&signals);
-    }
-
-    if col_close.is_empty() {
-        return Err("no candles found in DB for any instrument".to_string());
+    for r in results {
+        let n = r.closes.len();
+        total_trades += r.metrics.num_trades;
+        total_wins += (r.metrics.win_rate * r.metrics.num_trades as f64).round() as i32;
+        total_pnl += r.metrics.total_pnl;
+        if r.metrics.max_drawdown > max_drawdown { max_drawdown = r.metrics.max_drawdown; }
+        col_sec.extend(std::iter::repeat(r.security_id).take(n));
+        col_seg.extend(std::iter::repeat(r.exchange_segment).take(n));
+        col_ts.extend_from_slice(&r.timestamps);
+        col_open.extend_from_slice(&r.opens);
+        col_high.extend_from_slice(&r.highs);
+        col_low.extend_from_slice(&r.lows);
+        col_close.extend_from_slice(&r.closes);
+        col_vol.extend_from_slice(&r.volumes);
+        col_sig.extend_from_slice(&r.signals);
     }
 
     let win_rate = if total_trades > 0 { total_wins as f64 / total_trades as f64 } else { 0.0 };
