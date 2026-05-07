@@ -5,7 +5,10 @@ import type { RequestHandler } from './$types'
 
 export const GET: RequestHandler = async ({ url, cookies }) => {
 	const tokenId = url.searchParams.get('tokenId')
+	const storedConsent = cookies.get('dhan_consent')
+
 	if (!tokenId) return new Response('Missing tokenId', { status: 400 })
+	if (!storedConsent) return new Response('Invalid session', { status: 400 })
 
 	const resp = await fetch(`${DHAN_AUTH_URL}/app/consumeApp-consent?tokenId=${tokenId}`, {
 		method: 'POST',
