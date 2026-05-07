@@ -36,11 +36,14 @@ func main() {
 
 	go instrument.RunScheduler(database)
 
+	ih := &instrument.Handler{DB: database}
+
 	mh := market.NewHandler(database, key, os.Getenv("DHAN_BASE_URL"))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /internal/broker-token", h.StoreToken)
 	mh.RegisterRoutes(mux)
+	ih.RegisterRoutes(mux)
 
 	port := os.Getenv("GO_PORT")
 	if port == "" {
