@@ -13,11 +13,17 @@
 	</div>
 	<div class="actions">
 		{#if strategy.wasm_key}
-			<span class="badge ready">WASM ready</span>
+			<span class="badge ready">Ready</span>
+		{:else if strategy.build_status === 'pending' || strategy.build_status === 'building'}
+			<span class="badge building">Building…</span>
+		{:else if strategy.build_status === 'failed'}
+			<span class="badge failed" title={strategy.build_error}>Build failed</span>
 		{:else}
 			<span class="badge draft">No WASM</span>
 		{/if}
-		<a href="/strategies/{strategy.id}/run" class="btn-primary">New run</a>
+		{#if strategy.wasm_key}
+			<a href="/strategies/{strategy.id}/run" class="btn-primary">New run</a>
+		{/if}
 	</div>
 </div>
 
@@ -206,6 +212,8 @@
 
 	.badge.ready { background: var(--green); color: #000; }
 	.badge.draft { background: var(--bg); color: var(--text-muted); }
+	.badge.building { background: var(--accent); color: #000; }
+	.badge.failed { background: var(--red-bg); color: var(--red-muted); cursor: help; }
 	.badge.active { background: var(--green); color: #000; }
 	.badge.paused { background: var(--bg); color: var(--text-muted); }
 </style>

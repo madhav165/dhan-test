@@ -4,8 +4,13 @@ import type { PageServerLoad } from './$types'
 
 export const load: PageServerLoad = async ({ locals, params }) => {
 	const stratResult = await db.query(
-		`select id, name, source_key, wasm_key, created_at
-		 from strategies where id = $1 and user_id = $2`,
+		`select s.id, s.name, s.source_key, s.wasm_key, s.created_at,
+		        j.status as build_status, j.error as build_error
+		 from strategies s
+		 left join build_jobs j on j.strategy_id = s.id
+		 where s.id = $1 and s.user_id = $2
+		 order by j.created_at desc
+		 limit 1`,
 		[params.id, locals.user!.id]
 	)
 
