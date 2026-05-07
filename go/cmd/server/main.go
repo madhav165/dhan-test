@@ -9,6 +9,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/madhav165/dhan-test/go/internal/broker"
 	"github.com/madhav165/dhan-test/go/internal/db"
+	"github.com/madhav165/dhan-test/go/internal/instrument"
 	"github.com/madhav165/dhan-test/go/internal/market"
 )
 
@@ -32,6 +33,8 @@ func main() {
 		EncryptionKey:  key,
 		InternalSecret: os.Getenv("INTERNAL_SECRET"),
 	}
+
+	go instrument.RunScheduler(database)
 
 	mh := market.NewHandler(database, key, os.Getenv("DHAN_BASE_URL"))
 
