@@ -1,8 +1,26 @@
 <script lang="ts">
+	import { invalidateAll } from '$app/navigation'
+	import { onDestroy } from 'svelte'
+
 	let { data } = $props()
 	const strategy = $derived(data.strategy)
 	const runs = $derived(data.runs)
 	const policies = $derived(data.policies)
+
+	const building = $derived(
+		strategy.build_status === 'pending' || strategy.build_status === 'building'
+	)
+
+	let timer: ReturnType<typeof setInterval>
+	$effect(() => {
+		if (building) {
+			timer = setInterval(() => invalidateAll(), 3000)
+		} else {
+			clearInterval(timer)
+		}
+	})
+
+	onDestroy(() => clearInterval(timer))
 </script>
 
 <div class="header">
