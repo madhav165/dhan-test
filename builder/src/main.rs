@@ -283,7 +283,7 @@ async fn process_run_job(
                     low::float8, close::float8, volume \
              from candles \
              where security_id=$1 and exchange_segment=$2 and interval=$3 \
-             and timestamp::date between $4::date and $5::date \
+             and timestamp::date between $4::text::date and $5::text::date \
              order by timestamp",
             &[&security_id, &exchange_segment, &interval, &from_date, &to_date],
         ).await.map_err(|e| e.to_string())?;
@@ -342,12 +342,11 @@ async fn process_run_job(
     let result_key = format!("runs/{}/result.parquet", run_id);
     upload(s3, bucket, &result_key, parquet).await?;
 
-    eprintln!("builder: updating run metrics: trades={} pnl={} wr={} dd={}", total_trades, total_pnl, win_rate, max_drawdown);
     db.execute(
         "update backtest_runs set result_key=$1, num_trades=$2, \
          total_pnl=$3, win_rate=$4, max_drawdown=$5 where id=$6",
         &[&result_key, &total_trades, &total_pnl, &win_rate, &max_drawdown, &run_id],
-    ).await.map_err(|e| format!("{:#?}", e))?;
+    ).await.map_err(|e| e.to_string())?;
 
     Ok(())
 }
