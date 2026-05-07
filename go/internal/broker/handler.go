@@ -42,11 +42,11 @@ func (h *Handler) StoreToken(w http.ResponseWriter, r *http.Request) {
 
 	_, err = h.DB.Exec(
 		`insert into broker_connections (user_id, broker, client_id, encrypted_token, token_date, is_active)
-		 values ($1, $2, $3, $4, current_date, true)
+		 values ($1, $2, $3, $4, (current_timestamp at time zone 'Asia/Kolkata')::date, true)
 		 on conflict (user_id, broker) do update
 		 set client_id = excluded.client_id,
 		     encrypted_token = excluded.encrypted_token,
-		     token_date = current_date,
+		     token_date = (current_timestamp at time zone 'Asia/Kolkata')::date,
 		     is_active = true`,
 		req.UserID, req.Broker, req.ClientID, encrypted,
 	)

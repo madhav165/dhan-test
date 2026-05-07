@@ -11,7 +11,7 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
 		const result = await db.query(
 			`select is_active from broker_connections
 			 where user_id = $1 and broker = 'dhan'
-			 and token_date = current_date`,
+			 and token_date = (current_timestamp at time zone 'Asia/Kolkata')::date`,
 			[locals.user.id]
 		)
 		brokerConnected = result.rows[0]?.is_active === true
