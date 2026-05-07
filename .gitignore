@@ -1,0 +1,30 @@
+# Credentials
+.env
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+
+# Rust
+rust/target/
+Cargo.lock
+
+# Go
+go/vendor/
+*.test
+*.out
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
