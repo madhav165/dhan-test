@@ -3,7 +3,7 @@ use std::fs;
 use std::process::Command;
 use std::time::Duration;
 use tokio_postgres::NoTls;
-use aws_sdk_s3::{Client as S3Client, config::Builder as S3Builder};
+use aws_sdk_s3::{Client as S3Client, config::Builder as S3Builder, config::BehaviorVersion};
 use aws_credential_types::Credentials;
 use aws_config::Region;
 
@@ -62,6 +62,7 @@ async fn s3_client() -> S3Client {
         .credentials_provider(creds)
         .region(Region::new("us-east-1"))
         .force_path_style(true)
+        .behavior_version(BehaviorVersion::latest())
         .build();
 
     S3Client::from_conf(config)
