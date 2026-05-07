@@ -1,5 +1,5 @@
 [workspace]
-members = [
+members = ["indicators",
     "strategies/rsi_crossover",
 ]
 resolver = "2"
