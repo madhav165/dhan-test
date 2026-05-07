@@ -32,7 +32,7 @@
 					<div class="row-left">
 						<span class="strategy">{policy.strategy_name}</span>
 						<span class="symbols">{policy.symbols?.filter(Boolean).join(', ') || '—'}</span>
-						<span class="meta">{policy.mode}</span>
+						<span class="meta">{policy.mode} · {policy.interval}</span>
 					</div>
 					<span class="badge {policy.status}">{policy.status}</span>
 				</a>

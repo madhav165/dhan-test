@@ -5,7 +5,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const strategyId = url.searchParams.get('strategy_id')
 
 	const result = await db.query(
-		`select p.id, p.mode, p.status, p.created_at,
+		`select p.id, p.mode, p.status, p.interval, p.created_at,
 		        s.id as strategy_id, s.name as strategy_name,
 		        array_agg(i.trading_symbol order by i.trading_symbol) as symbols
 		 from policies p

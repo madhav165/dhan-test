@@ -66,6 +66,18 @@
 	</div>
 
 	<div class="field">
+		<label for="interval">Interval</label>
+		<select id="interval" name="interval" required>
+			<option value="1min">1 min</option>
+			<option value="5min">5 min</option>
+			<option value="15min">15 min</option>
+			<option value="25min">25 min</option>
+			<option value="60min">60 min</option>
+			<option value="day" selected>Day</option>
+		</select>
+	</div>
+
+	<div class="field">
 		<label for="instrument-search">Instruments</label>
 		<InstrumentSearch onselect={add} inputId="instrument-search" />
 		{#if selected.length > 0}

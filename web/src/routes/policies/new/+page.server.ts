@@ -23,9 +23,10 @@ export const actions: Actions = {
 		const form = await request.formData()
 		const strategy_id = form.get('strategy_id')?.toString()
 		const mode = form.get('mode')?.toString()
+		const interval = form.get('interval')?.toString()
 		const instruments = form.getAll('instruments').map((v) => JSON.parse(v.toString()))
 
-		if (!strategy_id || !mode) return fail(400, { error: 'All fields are required' })
+		if (!strategy_id || !mode || !interval) return fail(400, { error: 'All fields are required' })
 		if (instruments.length === 0) return fail(400, { error: 'Select at least one instrument' })
 		if (!['alert', 'trade'].includes(mode)) return fail(400, { error: 'Invalid mode' })
 
@@ -36,8 +37,8 @@ export const actions: Actions = {
 		if (stratResult.rows.length === 0) return fail(400, { error: 'Strategy not found' })
 
 		const policyResult = await db.query(
-			`insert into policies (strategy_id, mode) values ($1, $2) returning id`,
-			[strategy_id, mode]
+			`insert into policies (strategy_id, mode, interval) values ($1, $2, $3) returning id`,
+			[strategy_id, mode, interval]
 		)
 		const policyId = policyResult.rows[0].id
 

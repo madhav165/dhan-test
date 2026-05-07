@@ -36,6 +36,10 @@
 			<span class="detail-value">{policy.mode}</span>
 		</div>
 		<div class="detail-row">
+			<span class="detail-label">Interval</span>
+			<span class="detail-value">{policy.interval}</span>
+		</div>
+		<div class="detail-row">
 			<span class="detail-label">Instruments</span>
 			<span class="detail-value">
 				{policy.instruments?.filter((i: any) => i.trading_symbol).map((i: any) => `${i.trading_symbol} (${i.exchange_segment})`).join(', ') || '—'}

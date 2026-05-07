@@ -4,7 +4,7 @@ import type { Actions, PageServerLoad } from './$types'
 
 export const load: PageServerLoad = async ({ locals, params }) => {
 	const result = await db.query(
-		`select p.id, p.mode, p.status, p.created_at,
+		`select p.id, p.mode, p.status, p.interval, p.created_at,
 		        s.id as strategy_id, s.name as strategy_name,
 		        array_agg(
 		          json_build_object(
