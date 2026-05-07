@@ -39,6 +39,8 @@ export const actions: Actions = {
 			)
 		}
 
+		await db.query(`insert into run_jobs (run_id) values ($1)`, [runId])
+
 		redirect(302, `/strategies/${params.id}`)
 	},
 }

@@ -10,3 +10,11 @@ aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
 uuid = { version = "1", features = ["v4"] }
+wasmtime = { version = "28", default-features = false, features = ["cranelift", "runtime"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+aes-gcm = "0.10"
+base64 = "0.22"
+hex = "0.4"
+chrono = "0.4"

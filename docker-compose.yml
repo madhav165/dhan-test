@@ -54,6 +54,8 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@host.docker.internal:5432/dhan?sslmode=disable
       MINIO_ENDPOINT: host.docker.internal:9000
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      DHAN_BASE_URL: ${DHAN_BASE_URL:-https://api.dhan.co}
     depends_on:
       db:
         condition: service_healthy
