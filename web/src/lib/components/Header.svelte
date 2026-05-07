@@ -29,7 +29,7 @@
 	}
 
 	.logo {
-		color: var(--green);
+		color: var(--accent);
 		font-size: 18px;
 		font-weight: 700;
 	}

@@ -17,14 +17,14 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 		clientId = result.rows[0]?.client_id
 	}
 
-	if (!clientId || !/^\d{10}$/.test(clientId)) redirect(302, '/connect/dhan?error=invalid_client_id')
+	if (!clientId || !/^\d{10}$/.test(clientId)) redirect(302, '/?error=invalid_client_id')
 
 	const resp = await fetch(`${DHAN_AUTH_URL}/app/generate-consent?client_id=${clientId}`, {
 		method: 'POST',
 		headers: { app_id: DHAN_APP_ID, app_secret: DHAN_APP_SECRET },
 	})
 
-	if (!resp.ok) redirect(302, '/connect/dhan?error=invalid_client_id')
+	if (!resp.ok) redirect(302, '/?error=invalid_client_id')
 
 	const { consentAppId } = await resp.json()
 	cookies.set('dhan_consent', consentAppId, { path: '/', httpOnly: true, maxAge: 600, sameSite: 'lax', secure: false })

@@ -40,7 +40,7 @@
 
 	.btn {
 		display: block;
-		background: var(--green);
+		background: var(--accent);
 		color: #fff;
 		text-decoration: none;
 		padding: 12px 24px;
@@ -51,6 +51,6 @@
 	}
 
 	.btn:hover {
-		background: var(--green-hover);
+		background: var(--accent-hover);
 	}
 </style>

@@ -12,6 +12,8 @@ body {
 }
 
 :root {
+	--accent: #fdba74;
+	--accent-hover: #fb923c;
 	--green: #00c278;
 	--green-hover: #00a866;
 	--red: #f87171;

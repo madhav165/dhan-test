@@ -9,12 +9,11 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
 	let brokerConnected = false
 	if (locals.user) {
 		const result = await db.query(
-			`select is_active, token_date from broker_connections
-			 where user_id = $1 and broker = 'dhan'`,
+			`select is_active from broker_connections
+			 where user_id = $1 and broker = 'dhan' and token_date = current_date`,
 			[locals.user.id]
 		)
-		const conn = result.rows[0]
-		brokerConnected = conn?.is_active && conn?.token_date?.toISOString().slice(0, 10) === new Date().toISOString().slice(0, 10)
+		brokerConnected = result.rows[0]?.is_active === true
 	}
 
 	return { user: locals.user, brokerConnected }
