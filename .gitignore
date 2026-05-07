@@ -22,6 +22,17 @@ go/vendor/
 *.test
 *.out
 
+# SvelteKit
+web/.svelte-kit/
+web/node_modules/
+web/build/
+
+# Scratch scripts
+scratch/
+
+# Superpowers
+.superpowers/
+
 # Editors
 .vscode/
 .idea/
