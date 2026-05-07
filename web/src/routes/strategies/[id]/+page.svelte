@@ -84,7 +84,7 @@
 		<ul class="list">
 			{#each policies as policy}
 				<li>
-					<a href="/strategies/{strategy.id}/policies/{policy.id}" class="row">
+					<a href="/policies/{policy.id}" class="row">
 						<div class="row-left">
 							<span class="symbols">{policy.symbols?.filter(Boolean).join(', ') || '—'}</span>
 							<span class="meta">{policy.mode}</span>
