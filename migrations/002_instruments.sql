@@ -13,3 +13,4 @@ create table instruments (
 
 create index idx_instruments_symbol on instruments(trading_symbol);
 create index idx_instruments_custom_symbol on instruments(custom_symbol);
+create index idx_instruments_segment on instruments(exchange_segment);
