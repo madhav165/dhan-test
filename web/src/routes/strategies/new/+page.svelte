@@ -4,23 +4,25 @@
 
 	let { form } = $props()
 
-	const template = `// Available indicators:
-//   rsi(&prices, period) -> Vec<f64>
-//   sma(&prices, period) -> Vec<f64>
-//   ema(&prices, period) -> Vec<f64>
-//
+	const template = `// prices: &[f64]  — close prices up to current candle
+// i: usize        — current index (always >= 1)
+// Available: rsi(prices, period), sma(prices, period), ema(prices, period)
 // Return: 1 = buy, 2 = sell, 0 = hold
 
-let rsi_vals = rsi(&prices, 14);
+let rsi_vals = rsi(prices, 14);
 let prev = rsi_vals[i - 1];
 let curr = rsi_vals[i];
 
+if prev.is_nan() || curr.is_nan() {
+    return 0;
+}
+
 if prev >= 30.0 && curr < 30.0 {
-    1 // buy
+    1
 } else if prev <= 70.0 && curr > 70.0 {
-    2 // sell
+    2
 } else {
-    0 // hold
+    0
 }`
 
 	let code = $state(template)
