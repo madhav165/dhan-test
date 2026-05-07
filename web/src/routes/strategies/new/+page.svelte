@@ -1,6 +1,29 @@
 <script lang="ts">
 	import { enhance } from '$app/forms'
+	import RustEditor from '$lib/components/RustEditor.svelte'
+
 	let { form } = $props()
+
+	const template = `// Available indicators:
+//   rsi(&prices, period) -> Vec<f64>
+//   sma(&prices, period) -> Vec<f64>
+//   ema(&prices, period) -> Vec<f64>
+//
+// Return: 1 = buy, 2 = sell, 0 = hold
+
+let rsi_vals = rsi(&prices, 14);
+let prev = rsi_vals[i - 1];
+let curr = rsi_vals[i];
+
+if prev >= 30.0 && curr < 30.0 {
+    1 // buy
+} else if prev <= 70.0 && curr > 70.0 {
+    2 // sell
+} else {
+    0 // hold
+}`
+
+	let code = $state(template)
 </script>
 
 <div class="header">
@@ -18,11 +41,14 @@
 		<input id="name" name="name" type="text" placeholder="e.g. RSI mean reversion" required />
 	</div>
 
-	<p class="hint">Upload a compiled WASM strategy file, or leave blank and attach one later.</p>
-
 	<div class="field">
-		<label for="wasm">Strategy file (.wasm)</label>
-		<input id="wasm" name="wasm" type="file" accept=".wasm" />
+		<label for="code">Signal logic</label>
+		<p class="hint">
+			Write the body of your signal function. Use <code>prices</code> (close prices), <code>i</code> (current index).
+			Return <code>1</code> to buy, <code>2</code> to sell, <code>0</code> to hold.
+		</p>
+		<RustEditor value={code} onchange={(v) => (code = v)} />
+		<input type="hidden" name="code" value={code} />
 	</div>
 
 	<div class="footer">
@@ -52,7 +78,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 20px;
-		max-width: 480px;
+		max-width: 680px;
 	}
 
 	.field {
@@ -80,15 +106,17 @@
 
 	input[type='text']:focus { border-color: var(--accent); }
 
-	input[type='file'] {
-		color: var(--text-muted);
-		font-size: 0.875rem;
-	}
-
 	.hint {
 		color: var(--text-muted);
 		font-size: 0.8rem;
 		margin: 0;
+	}
+
+	.hint code {
+		background: var(--bg-surface);
+		border-radius: 3px;
+		font-size: 0.75rem;
+		padding: 1px 4px;
 	}
 
 	.footer {
