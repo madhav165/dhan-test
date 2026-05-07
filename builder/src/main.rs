@@ -1,13 +1,16 @@
 use std::env;
 use std::fs;
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_postgres::NoTls;
 use aws_sdk_s3::{Client as S3Client, config::Builder as S3Builder, config::BehaviorVersion};
 use aws_credential_types::Credentials;
 use aws_config::Region;
-use aes_gcm::{Aes256Gcm, Key, Nonce, aead::{Aead, KeyInit}};
-use base64::{Engine as B64Engine, engine::general_purpose::STANDARD as BASE64};
+use arrow::array::{Float64Array, Int64Array, StringArray, UInt8Array};
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::record_batch::RecordBatch;
+use parquet::arrow::ArrowWriter;
 
 const SCAFFOLD: &str = r#"
 use std::cell::UnsafeCell;
@@ -92,172 +95,6 @@ async fn download(s3: &S3Client, bucket: &str, key: &str) -> Result<Vec<u8>, Str
     Ok(bytes.to_vec())
 }
 
-fn decrypt_token(key_hex: &str, encoded: &str) -> Result<String, String> {
-    let key_bytes = hex::decode(key_hex).map_err(|e| e.to_string())?;
-    if key_bytes.len() != 32 {
-        return Err("encryption key must be 32 bytes".to_string());
-    }
-    let ciphertext = BASE64.decode(encoded).map_err(|e| e.to_string())?;
-    if ciphertext.len() < 12 {
-        return Err("ciphertext too short".to_string());
-    }
-    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(&ciphertext[..12]);
-    let plaintext = cipher.decrypt(nonce, &ciphertext[12..])
-        .map_err(|e| e.to_string())?;
-    String::from_utf8(plaintext).map_err(|e| e.to_string())
-}
-
-fn map_segment(seg: &str) -> (&'static str, &'static str) {
-    // returns (dhan_exchange_segment, instrument_type)
-    match seg {
-        "NSE_E" => ("NSE_EQ", "EQUITY"),
-        "BSE_E" => ("BSE_EQ", "EQUITY"),
-        "NSE_I" => ("IDX_I", "INDEX"),
-        _ => ("NSE_EQ", "EQUITY"),
-    }
-}
-
-fn interval_minutes(interval: &str) -> Option<u32> {
-    match interval {
-        "1min" => Some(1),
-        "5min" => Some(5),
-        "15min" => Some(15),
-        "25min" => Some(25),
-        "60min" => Some(60),
-        _ => None, // "day" → None means use historical endpoint
-    }
-}
-
-#[derive(serde::Serialize)]
-struct HistoricalReq {
-    #[serde(rename = "securityId")]
-    security_id: String,
-    #[serde(rename = "exchangeSegment")]
-    exchange_segment: String,
-    instrument: String,
-    #[serde(rename = "expiryCode")]
-    expiry_code: u32,
-    #[serde(rename = "fromDate")]
-    from_date: String,
-    #[serde(rename = "toDate")]
-    to_date: String,
-}
-
-#[derive(serde::Serialize)]
-struct IntradayReq {
-    #[serde(rename = "securityId")]
-    security_id: String,
-    #[serde(rename = "exchangeSegment")]
-    exchange_segment: String,
-    instrument: String,
-    interval: String,
-    #[serde(rename = "fromDate")]
-    from_date: String,
-    #[serde(rename = "toDate")]
-    to_date: String,
-}
-
-#[derive(serde::Deserialize, Debug)]
-struct CandleResp {
-    open: Vec<f64>,
-    high: Vec<f64>,
-    low: Vec<f64>,
-    close: Vec<f64>,
-    volume: Vec<i64>,
-    timestamp: Vec<i64>,
-}
-
-#[derive(serde::Serialize)]
-struct CandleRecord {
-    timestamp: i64,
-    open: f64,
-    high: f64,
-    low: f64,
-    close: f64,
-    volume: i64,
-    signal: u8,
-}
-
-async fn fetch_candles(
-    http: &reqwest::Client,
-    dhan_base: &str,
-    client_id: &str,
-    access_token: &str,
-    security_id: &str,
-    exchange_segment: &str,
-    interval: &str,
-    from_date: &str,
-    to_date: &str,
-) -> Result<CandleResp, String> {
-    let (dhan_seg, instrument) = map_segment(exchange_segment);
-
-    if let Some(mins) = interval_minutes(interval) {
-        // Intraday: max 90 days per request — paginate
-        let fmt = "%Y-%m-%d";
-        let mut from = chrono::NaiveDate::parse_from_str(from_date, fmt).map_err(|e| e.to_string())?;
-        let to = chrono::NaiveDate::parse_from_str(to_date, fmt).map_err(|e| e.to_string())?;
-
-        let mut all = CandleResp {
-            open: vec![], high: vec![], low: vec![], close: vec![],
-            volume: vec![], timestamp: vec![],
-        };
-
-        while from <= to {
-            let chunk_to = std::cmp::min(from + chrono::Duration::days(89), to);
-            let req = IntradayReq {
-                security_id: security_id.to_string(),
-                exchange_segment: dhan_seg.to_string(),
-                instrument: instrument.to_string(),
-                interval: mins.to_string(),
-                from_date: from.format(fmt).to_string(),
-                to_date: chunk_to.format(fmt).to_string(),
-            };
-
-            let resp = http.post(format!("{}/charts/intraday", dhan_base))
-                .header("access-token", access_token)
-                .header("client-id", client_id)
-                .json(&req)
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
-
-            let chunk: CandleResp = resp.json().await.map_err(|e| e.to_string())?;
-            all.open.extend(chunk.open);
-            all.high.extend(chunk.high);
-            all.low.extend(chunk.low);
-            all.close.extend(chunk.close);
-            all.volume.extend(chunk.volume);
-            all.timestamp.extend(chunk.timestamp);
-
-            from = chunk_to + chrono::Duration::days(1);
-        }
-
-        Ok(all)
-    } else {
-        // Daily
-        let req = HistoricalReq {
-            security_id: security_id.to_string(),
-            exchange_segment: dhan_seg.to_string(),
-            instrument: instrument.to_string(),
-            expiry_code: 0,
-            from_date: from_date.to_string(),
-            to_date: to_date.to_string(),
-        };
-
-        let resp = http.post(format!("{}/charts/historical", dhan_base))
-            .header("access-token", access_token)
-            .header("client-id", client_id)
-            .json(&req)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        resp.json().await.map_err(|e| e.to_string())
-    }
-}
-
 fn run_wasm(wasm: &[u8], closes: &[f64]) -> Result<Vec<u8>, String> {
     use wasmtime::{Engine, Linker, Module, Store};
 
@@ -313,9 +150,7 @@ fn compute_metrics(closes: &[f64], signals: &[u8]) -> Metrics {
 
     for (i, &sig) in signals.iter().enumerate() {
         match sig {
-            1 if entry.is_none() => {
-                entry = Some(closes[i]);
-            }
+            1 if entry.is_none() => { entry = Some(closes[i]); }
             2 if entry.is_some() => {
                 let e = entry.take().unwrap();
                 let pnl = closes[i] - e;
@@ -331,7 +166,6 @@ fn compute_metrics(closes: &[f64], signals: &[u8]) -> Metrics {
         }
     }
 
-    // Close open position at last bar
     if let Some(e) = entry {
         if let Some(&last) = closes.last() {
             let pnl = last - e;
@@ -345,13 +179,52 @@ fn compute_metrics(closes: &[f64], signals: &[u8]) -> Metrics {
     Metrics { num_trades, total_pnl, win_rate, max_drawdown }
 }
 
+fn build_parquet(
+    security_ids: &[String],
+    exchange_segments: &[String],
+    timestamps: &[i64],
+    opens: &[f64],
+    highs: &[f64],
+    lows: &[f64],
+    closes: &[f64],
+    volumes: &[i64],
+    signals: &[u8],
+) -> Result<Vec<u8>, String> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("security_id", DataType::Utf8, false),
+        Field::new("exchange_segment", DataType::Utf8, false),
+        Field::new("timestamp", DataType::Int64, false),
+        Field::new("open", DataType::Float64, false),
+        Field::new("high", DataType::Float64, false),
+        Field::new("low", DataType::Float64, false),
+        Field::new("close", DataType::Float64, false),
+        Field::new("volume", DataType::Int64, false),
+        Field::new("signal", DataType::UInt8, false),
+    ]));
+
+    let batch = RecordBatch::try_new(schema.clone(), vec![
+        Arc::new(StringArray::from(security_ids.to_vec())),
+        Arc::new(StringArray::from(exchange_segments.to_vec())),
+        Arc::new(Int64Array::from(timestamps.to_vec())),
+        Arc::new(Float64Array::from(opens.to_vec())),
+        Arc::new(Float64Array::from(highs.to_vec())),
+        Arc::new(Float64Array::from(lows.to_vec())),
+        Arc::new(Float64Array::from(closes.to_vec())),
+        Arc::new(Int64Array::from(volumes.to_vec())),
+        Arc::new(UInt8Array::from(signals.to_vec())),
+    ]).map_err(|e| e.to_string())?;
+
+    let mut buf = Vec::new();
+    let mut writer = ArrowWriter::try_new(&mut buf, schema, None).map_err(|e| e.to_string())?;
+    writer.write(&batch).map_err(|e| e.to_string())?;
+    writer.close().map_err(|e| e.to_string())?;
+    Ok(buf)
+}
+
 async fn process_run_job(
     db: &tokio_postgres::Client,
     s3: &S3Client,
     bucket: &str,
-    http: &reqwest::Client,
-    dhan_base: &str,
-    encryption_key: &str,
     job_id: uuid::Uuid,
     run_id: uuid::Uuid,
 ) -> Result<(), String> {
@@ -360,10 +233,8 @@ async fn process_run_job(
         &[&job_id],
     ).await.map_err(|e| e.to_string())?;
 
-    // Fetch run details
     let run_row = db.query_one(
-        "select r.interval, r.from_date::text, r.to_date::text, \
-                s.wasm_key, s.user_id \
+        "select r.interval, r.from_date::text, r.to_date::text, s.wasm_key \
          from backtest_runs r \
          join strategies s on s.id = r.strategy_id \
          where r.id = $1",
@@ -374,11 +245,8 @@ async fn process_run_job(
     let from_date: String = run_row.get(1);
     let to_date: String = run_row.get(2);
     let wasm_key: Option<String> = run_row.get(3);
-    let user_id: uuid::Uuid = run_row.get(4);
-
     let wasm_key = wasm_key.ok_or_else(|| "strategy not compiled".to_string())?;
 
-    // Fetch instruments
     let inst_rows = db.query(
         "select security_id, exchange_segment from backtest_run_instruments where run_id = $1",
         &[&run_id],
@@ -388,77 +256,92 @@ async fn process_run_job(
         return Err("no instruments for run".to_string());
     }
 
-    // Get user's Dhan token
-    let token_row = db.query_one(
-        "select client_id, encrypted_token from broker_connections \
-         where user_id = $1 and broker = 'dhan' \
-         and token_date = (current_timestamp at time zone 'Asia/Kolkata')::date \
-         and is_active = true",
-        &[&user_id],
-    ).await.map_err(|_| "no active dhan token".to_string())?;
-
-    let client_id: String = token_row.get(0);
-    let encrypted_token: String = token_row.get(1);
-    let access_token = decrypt_token(encryption_key, &encrypted_token)?;
-
-    // Download WASM
     let wasm = download(s3, bucket, &wasm_key).await?;
 
-    // Run WASM for each instrument and collect metrics
-    let mut all_records: Vec<serde_json::Value> = vec![];
+    // Collect parquet columns across all instruments
+    let mut col_sec: Vec<String> = vec![];
+    let mut col_seg: Vec<String> = vec![];
+    let mut col_ts: Vec<i64> = vec![];
+    let mut col_open: Vec<f64> = vec![];
+    let mut col_high: Vec<f64> = vec![];
+    let mut col_low: Vec<f64> = vec![];
+    let mut col_close: Vec<f64> = vec![];
+    let mut col_vol: Vec<i64> = vec![];
+    let mut col_sig: Vec<u8> = vec![];
+
     let mut total_trades = 0i32;
-    let mut total_pnl = 0.0f64;
     let mut total_wins = 0i32;
+    let mut total_pnl = 0.0f64;
     let mut max_drawdown = 0.0f64;
 
     for row in &inst_rows {
         let security_id: &str = row.get(0);
         let exchange_segment: &str = row.get(1);
 
-        let candles = fetch_candles(
-            http, dhan_base, &client_id, &access_token,
-            security_id, exchange_segment, &interval, &from_date, &to_date,
-        ).await?;
+        let candle_rows = db.query(
+            "select extract(epoch from timestamp)::bigint, open::float8, high::float8, \
+                    low::float8, close::float8, volume \
+             from candles \
+             where security_id=$1 and exchange_segment=$2 and interval=$3 \
+             and timestamp::date between $4::date and $5::date \
+             order by timestamp",
+            &[&security_id, &exchange_segment, &interval, &from_date, &to_date],
+        ).await.map_err(|e| e.to_string())?;
 
-        if candles.close.is_empty() {
+        if candle_rows.is_empty() {
             continue;
         }
 
-        let signals = run_wasm(&wasm, &candles.close)?;
-        let m = compute_metrics(&candles.close, &signals);
+        let mut timestamps: Vec<i64> = vec![];
+        let mut opens: Vec<f64> = vec![];
+        let mut highs: Vec<f64> = vec![];
+        let mut lows: Vec<f64> = vec![];
+        let mut closes: Vec<f64> = vec![];
+        let mut volumes: Vec<i64> = vec![];
+
+        for r in &candle_rows {
+            timestamps.push(r.get(0));
+            opens.push(r.get(1));
+            highs.push(r.get(2));
+            lows.push(r.get(3));
+            closes.push(r.get(4));
+            volumes.push(r.get(5));
+        }
+
+        let signals = run_wasm(&wasm, &closes)?;
+        let m = compute_metrics(&closes, &signals);
 
         total_trades += m.num_trades;
-        total_pnl += m.total_pnl;
         total_wins += (m.win_rate * m.num_trades as f64).round() as i32;
+        total_pnl += m.total_pnl;
         if m.max_drawdown > max_drawdown { max_drawdown = m.max_drawdown; }
 
-        let records: Vec<CandleRecord> = (0..candles.close.len())
-            .map(|i| CandleRecord {
-                timestamp: *candles.timestamp.get(i).unwrap_or(&0),
-                open: *candles.open.get(i).unwrap_or(&0.0),
-                high: *candles.high.get(i).unwrap_or(&0.0),
-                low: *candles.low.get(i).unwrap_or(&0.0),
-                close: candles.close[i],
-                volume: *candles.volume.get(i).unwrap_or(&0),
-                signal: signals[i],
-            })
-            .collect();
+        let n = closes.len();
+        col_sec.extend(std::iter::repeat(security_id.to_string()).take(n));
+        col_seg.extend(std::iter::repeat(exchange_segment.to_string()).take(n));
+        col_ts.extend_from_slice(&timestamps);
+        col_open.extend_from_slice(&opens);
+        col_high.extend_from_slice(&highs);
+        col_low.extend_from_slice(&lows);
+        col_close.extend_from_slice(&closes);
+        col_vol.extend_from_slice(&volumes);
+        col_sig.extend_from_slice(&signals);
+    }
 
-        all_records.push(serde_json::json!({
-            "security_id": security_id,
-            "exchange_segment": exchange_segment,
-            "candles": records,
-        }));
+    if col_close.is_empty() {
+        return Err("no candles found in DB for any instrument".to_string());
     }
 
     let win_rate = if total_trades > 0 { total_wins as f64 / total_trades as f64 } else { 0.0 };
 
-    // Store result JSON in MinIO
-    let result_json = serde_json::to_vec(&all_records).map_err(|e| e.to_string())?;
-    let result_key = format!("runs/{}/result.json", run_id);
-    upload(s3, bucket, &result_key, result_json).await?;
+    let parquet = build_parquet(
+        &col_sec, &col_seg, &col_ts,
+        &col_open, &col_high, &col_low, &col_close, &col_vol, &col_sig,
+    )?;
 
-    // Update backtest_runs
+    let result_key = format!("runs/{}/result.parquet", run_id);
+    upload(s3, bucket, &result_key, parquet).await?;
+
     db.execute(
         "update backtest_runs set result_key=$1, num_trades=$2, \
          total_pnl=$3, win_rate=$4, max_drawdown=$5 where id=$6",
@@ -476,17 +359,14 @@ async fn process_job(
     strategy_id: &str,
     snippet: &str,
 ) -> Result<(String, String), String> {
-    // Mark as building
     db.execute(
         "update build_jobs set status='building', updated_at=now() where id=$1",
         &[&uuid::Uuid::parse_str(job_id).unwrap()],
     ).await.map_err(|e| e.to_string())?;
 
-    // Create temp workspace
     let dir = format!("/tmp/strategy_{}", job_id);
     fs::create_dir_all(format!("{}/src", dir)).map_err(|e| e.to_string())?;
 
-    // Write Cargo.toml
     fs::write(format!("{}/Cargo.toml", dir), format!(r#"
 [package]
 name = "strategy"
@@ -500,11 +380,9 @@ crate-type = ["cdylib"]
 indicators = {{ path = "/app/indicators" }}
 "#)).map_err(|e| e.to_string())?;
 
-    // Write lib.rs with scaffold + user snippet
     let source = wrap_snippet(snippet);
     fs::write(format!("{}/src/lib.rs", dir), &source).map_err(|e| e.to_string())?;
 
-    // Compile
     let output = Command::new("cargo")
         .args(["build", "--release", "--target", "wasm32-unknown-unknown"])
         .current_dir(&dir)
@@ -517,11 +395,9 @@ indicators = {{ path = "/app/indicators" }}
         return Err(err);
     }
 
-    // Upload source
     let source_key = format!("strategies/{}/source.rs", strategy_id);
     upload(s3, bucket, &source_key, source.into_bytes()).await?;
 
-    // Upload WASM
     let wasm_path = format!("{}/target/wasm32-unknown-unknown/release/strategy.wasm", dir);
     let wasm = fs::read(&wasm_path).map_err(|e| e.to_string())?;
     let wasm_key = format!("strategies/{}/strategy.wasm", strategy_id);
@@ -535,22 +411,17 @@ indicators = {{ path = "/app/indicators" }}
 async fn main() {
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL required");
     let bucket = env::var("MINIO_BUCKET").unwrap_or_else(|_| "dhan".to_string());
-    let dhan_base = env::var("DHAN_BASE_URL").unwrap_or_else(|_| "https://api.dhan.co".to_string());
-    let encryption_key = env::var("ENCRYPTION_KEY").unwrap_or_default();
 
     let (db, connection) = tokio_postgres::connect(&db_url, NoTls).await.expect("db connect failed");
     tokio::spawn(async move { connection.await.expect("db connection error") });
 
     let s3 = s3_client().await;
-    let http = reqwest::Client::new();
-
-    // Ensure bucket exists
     s3.create_bucket().bucket(&bucket).send().await.ok();
 
     println!("builder: polling for jobs");
 
     loop {
-        // --- build jobs ---
+        // build jobs
         let rows = db.query(
             "select j.id, j.strategy_id, s.source_key
              from build_jobs j
@@ -601,9 +472,9 @@ async fn main() {
             }
         }
 
-        // --- run jobs ---
+        // run jobs — only process ones marked ready by Go worker
         let run_rows = db.query(
-            "select id, run_id from run_jobs where status = 'pending' order by created_at limit 1",
+            "select id, run_id from run_jobs where status = 'ready' order by created_at limit 1",
             &[],
         ).await.unwrap_or_default();
 
@@ -611,9 +482,9 @@ async fn main() {
             let job_id: uuid::Uuid = row.get(0);
             let run_id: uuid::Uuid = row.get(1);
 
-            println!("builder: running backtest {}", run_id);
+            println!("builder: executing run {}", run_id);
 
-            match process_run_job(&db, &s3, &bucket, &http, &dhan_base, &encryption_key, job_id, run_id).await {
+            match process_run_job(&db, &s3, &bucket, job_id, run_id).await {
                 Ok(()) => {
                     db.execute(
                         "update run_jobs set status='done', updated_at=now() where id=$1",

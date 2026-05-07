@@ -11,6 +11,7 @@ import (
 	"github.com/madhav165/dhan-test/go/internal/db"
 	"github.com/madhav165/dhan-test/go/internal/instrument"
 	"github.com/madhav165/dhan-test/go/internal/market"
+	"github.com/madhav165/dhan-test/go/internal/run"
 )
 
 func main() {
@@ -35,6 +36,9 @@ func main() {
 	}
 
 	go instrument.RunScheduler(database)
+
+	runWorker := &run.Worker{DB: database, EncKey: key, DhanBaseURL: os.Getenv("DHAN_BASE_URL")}
+	go runWorker.Start()
 
 	ih := &instrument.Handler{DB: database}
 
