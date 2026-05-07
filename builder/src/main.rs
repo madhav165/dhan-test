@@ -344,7 +344,7 @@ async fn process_run_job(
 
     db.execute(
         "update backtest_runs set result_key=$1, num_trades=$2, \
-         total_pnl=$3, win_rate=$4, max_drawdown=$5 where id=$6",
+         total_pnl=$3::float8, win_rate=$4::float8, max_drawdown=$5::float8 where id=$6",
         &[&result_key, &total_trades, &total_pnl, &win_rate, &max_drawdown, &run_id],
     ).await.map_err(|e| e.to_string())?;
 
