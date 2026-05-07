@@ -1,35 +1,48 @@
 <script lang="ts">
 	let { data } = $props()
 	const strategy = $derived(data.strategy)
-	const instruments = $derived(data.instruments)
 	const runs = $derived(data.runs)
+	const policies = $derived(data.policies)
 </script>
 
 <div class="header">
 	<div>
 		<a href="/strategies" class="back">← Strategies</a>
 		<h1>{strategy.name}</h1>
-		<p class="meta">{strategy.interval} · {strategy.from_date} → {strategy.to_date}</p>
+		<p class="meta">Created {new Date(strategy.created_at).toLocaleDateString('en-IN')}</p>
 	</div>
 	<div class="actions">
-		<span class="badge {strategy.status}">{strategy.status}</span>
+		{#if strategy.wasm_key}
+			<span class="badge ready">WASM ready</span>
+		{:else}
+			<span class="badge draft">No WASM</span>
+		{/if}
 		<a href="/strategies/{strategy.id}/run" class="btn-primary">New run</a>
 	</div>
 </div>
 
 <section>
-	<h2>Instruments</h2>
-	{#if instruments.length === 0}
-		<p class="empty">No instruments selected.</p>
+	<div class="section-header">
+		<h2>Runs</h2>
+	</div>
+	{#if runs.length === 0}
+		<p class="empty">No runs yet. Click "New run" to backtest this strategy.</p>
 	{:else}
-		<ul class="instrument-list">
-			{#each instruments as inst}
+		<ul class="list">
+			{#each runs as run}
 				<li>
-					<span class="symbol">{inst.trading_symbol}</span>
-					{#if inst.custom_symbol}
-						<span class="iname">{inst.custom_symbol}</span>
-					{/if}
-					<span class="tag">{inst.exchange_segment}</span>
+					<a href="/strategies/{strategy.id}/runs/{run.id}" class="row">
+						<div class="row-left">
+							<span class="symbols">{run.symbols?.filter(Boolean).join(', ') || '—'}</span>
+							<span class="meta">{run.interval} · {run.from_date} → {run.to_date}</span>
+						</div>
+						<div class="metrics">
+							<span>Trades: {run.num_trades ?? '—'}</span>
+							<span>PnL: {run.total_pnl ?? '—'}</span>
+							<span>Win: {run.win_rate != null ? (run.win_rate * 100).toFixed(1) + '%' : '—'}</span>
+							<span>DD: {run.max_drawdown ?? '—'}</span>
+						</div>
+					</a>
 				</li>
 			{/each}
 		</ul>
@@ -37,21 +50,22 @@
 </section>
 
 <section>
-	<h2>Runs</h2>
-	{#if runs.length === 0}
-		<p class="empty">No runs yet. Click "New run" to backtest this strategy.</p>
+	<div class="section-header">
+		<h2>Policies</h2>
+		<a href="/strategies/{strategy.id}/policies/new" class="btn-secondary">New policy</a>
+	</div>
+	{#if policies.length === 0}
+		<p class="empty">No policies yet. Activate this strategy on instruments after a successful run.</p>
 	{:else}
 		<ul class="list">
-			{#each runs as run}
+			{#each policies as policy}
 				<li>
-					<a href="/strategies/{strategy.id}/runs/{run.id}" class="run-row">
-						<span class="run-date">{new Date(run.run_at).toLocaleString('en-IN')}</span>
-						<div class="run-metrics">
-							<span>Trades: {run.num_trades ?? '—'}</span>
-							<span>PnL: {run.total_pnl != null ? run.total_pnl : '—'}</span>
-							<span>Win rate: {run.win_rate != null ? (run.win_rate * 100).toFixed(1) + '%' : '—'}</span>
-							<span>Drawdown: {run.max_drawdown != null ? run.max_drawdown : '—'}</span>
+					<a href="/strategies/{strategy.id}/policies/{policy.id}" class="row">
+						<div class="row-left">
+							<span class="symbols">{policy.symbols?.filter(Boolean).join(', ') || '—'}</span>
+							<span class="meta">{policy.mode}</span>
 						</div>
+						<span class="badge {policy.status}">{policy.status}</span>
 					</a>
 				</li>
 			{/each}
@@ -93,6 +107,71 @@
 		gap: 12px;
 	}
 
+	section { margin-bottom: 32px; }
+
+	.section-header {
+		align-items: center;
+		display: flex;
+		justify-content: space-between;
+		margin-bottom: 12px;
+	}
+
+	h2 {
+		color: var(--text-muted);
+		font-size: 0.8rem;
+		font-weight: 600;
+		letter-spacing: 0.06em;
+		margin: 0;
+		text-transform: uppercase;
+	}
+
+	.empty {
+		color: var(--text-muted);
+		font-size: 0.875rem;
+	}
+
+	.list {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+
+	.row {
+		align-items: center;
+		background: var(--bg-surface);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		display: flex;
+		justify-content: space-between;
+		padding: 14px 16px;
+		text-decoration: none;
+		transition: border-color 0.15s;
+	}
+
+	.row:hover { border-color: var(--accent); }
+
+	.row-left {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.symbols {
+		color: var(--text);
+		font-size: 0.875rem;
+		font-weight: 500;
+	}
+
+	.metrics {
+		color: var(--text-muted);
+		display: flex;
+		font-size: 0.8rem;
+		gap: 20px;
+	}
+
 	.btn-primary {
 		background: var(--accent);
 		border-radius: 6px;
@@ -105,85 +184,16 @@
 
 	.btn-primary:hover { background: var(--accent-hover); }
 
-	section { margin-bottom: 32px; }
-
-	h2 {
-		font-size: 0.9rem;
-		font-weight: 600;
-		letter-spacing: 0.05em;
-		margin: 0 0 12px;
-		text-transform: uppercase;
-		color: var(--text-muted);
-	}
-
-	.empty {
-		color: var(--text-muted);
-		font-size: 0.875rem;
-	}
-
-	.instrument-list {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 8px;
-		list-style: none;
-		margin: 0;
-		padding: 0;
-	}
-
-	.instrument-list li {
-		align-items: center;
-		background: var(--bg-surface);
+	.btn-secondary {
 		border: 1px solid var(--border);
 		border-radius: 6px;
-		display: flex;
-		gap: 8px;
+		color: var(--text-muted);
+		font-size: 0.8rem;
 		padding: 6px 12px;
-	}
-
-	.symbol { font-size: 0.875rem; font-weight: 600; }
-	.iname { color: var(--text-muted); font-size: 0.8rem; }
-	.tag {
-		background: var(--bg);
-		border-radius: 4px;
-		color: var(--text-muted);
-		font-size: 0.7rem;
-		padding: 2px 6px;
-	}
-
-	.list {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-		list-style: none;
-		margin: 0;
-		padding: 0;
-	}
-
-	.run-row {
-		align-items: center;
-		background: var(--bg-surface);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		display: flex;
-		justify-content: space-between;
-		padding: 14px 16px;
 		text-decoration: none;
-		transition: border-color 0.15s;
 	}
 
-	.run-row:hover { border-color: var(--accent); }
-
-	.run-date {
-		color: var(--text-muted);
-		font-size: 0.8rem;
-	}
-
-	.run-metrics {
-		color: var(--text);
-		display: flex;
-		font-size: 0.8rem;
-		gap: 20px;
-	}
+	.btn-secondary:hover { color: var(--text); }
 
 	.badge {
 		border-radius: 4px;
@@ -194,7 +204,8 @@
 		text-transform: uppercase;
 	}
 
+	.badge.ready { background: var(--green); color: #000; }
 	.badge.draft { background: var(--bg); color: var(--text-muted); }
-	.badge.backtesting { background: var(--accent); color: #000; }
 	.badge.active { background: var(--green); color: #000; }
+	.badge.paused { background: var(--bg); color: var(--text-muted); }
 </style>

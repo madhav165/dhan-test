@@ -16,14 +16,9 @@
 				<a href="/strategies/{s.id}" class="strategy-row">
 					<div class="strategy-info">
 						<span class="name">{s.name}</span>
-						<span class="meta">{s.interval} · {s.from_date} → {s.to_date}</span>
+						<span class="meta">Created {new Date(s.created_at).toLocaleDateString('en-IN')}</span>
 					</div>
-					<div class="strategy-right">
-						<span class="badge {s.status}">{s.status}</span>
-						{#if s.status === 'active'}
-							<span class="badge mode">{s.mode}</span>
-						{/if}
-					</div>
+					<span class="badge {s.wasm_key ? 'ready' : 'draft'}">{s.wasm_key ? 'WASM ready' : 'No WASM'}</span>
 				</a>
 			</li>
 		{/each}
@@ -106,12 +101,7 @@
 		font-size: 0.75rem;
 	}
 
-	.strategy-right {
-		display: flex;
-		gap: 6px;
-	}
-
-	.badge {
+.badge {
 		border-radius: 4px;
 		font-size: 0.7rem;
 		font-weight: 600;
@@ -121,7 +111,5 @@
 	}
 
 	.badge.draft { background: var(--bg); color: var(--text-muted); }
-	.badge.backtesting { background: var(--accent); color: #000; }
-	.badge.active { background: var(--green); color: #000; }
-	.badge.mode { background: var(--bg); color: var(--text-subtle); }
+	.badge.ready { background: var(--green); color: #000; }
 </style>

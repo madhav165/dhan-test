@@ -10,9 +10,10 @@
 	type Props = {
 		onselect: (instrument: Instrument) => void
 		placeholder?: string
+		inputId?: string
 	}
 
-	let { onselect, placeholder = 'Search instruments…' }: Props = $props()
+	let { onselect, placeholder = 'Search instruments…', inputId }: Props = $props()
 
 	let query = $state('')
 	let results = $state<Instrument[]>([])
@@ -52,6 +53,7 @@
 
 <div class="search-wrapper">
 	<input
+		id={inputId}
 		type="text"
 		bind:value={query}
 		oninput={onInput}
