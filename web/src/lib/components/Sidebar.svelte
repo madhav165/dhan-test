@@ -40,6 +40,9 @@
 		<a href="/strategies" class="nav-link" class:active={$page.url.pathname.startsWith('/strategies')}>
 			Strategies
 		</a>
+		<a href="/runs" class="nav-link" class:active={$page.url.pathname.startsWith('/runs')}>
+			Runs
+		</a>
 	</nav>
 
 	<hr />

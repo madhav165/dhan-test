@@ -55,7 +55,7 @@
 		<ul class="list">
 			{#each runs as run}
 				<li>
-					<a href="/strategies/{strategy.id}/runs/{run.id}" class="row">
+					<a href="/runs/{run.id}" class="row">
 						<div class="row-left">
 							<span class="symbols">{run.symbols?.filter(Boolean).join(', ') || '—'}</span>
 							<span class="meta">{run.interval} · {run.from_date} → {run.to_date}</span>
