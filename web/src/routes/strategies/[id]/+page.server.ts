@@ -7,10 +7,13 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 		`select s.id, s.name, s.source_key, s.wasm_key, s.created_at,
 		        j.status as build_status, j.error as build_error
 		 from strategies s
-		 left join build_jobs j on j.strategy_id = s.id
-		 where s.id = $1 and s.user_id = $2
-		 order by j.created_at desc
-		 limit 1`,
+		 left join lateral (
+		   select status, error from build_jobs
+		   where strategy_id = s.id
+		   order by created_at desc
+		   limit 1
+		 ) j on true
+		 where s.id = $1 and s.user_id = $2`,
 		[params.id, locals.user!.id]
 	)
 
