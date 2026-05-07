@@ -7,19 +7,38 @@ import (
 	"net/http"
 
 	"github.com/madhav165/dhan-test/go/internal/broker"
+	"github.com/madhav165/dhan-test/go/internal/ratelimit"
+	"golang.org/x/time/rate"
 )
 
 type Handler struct {
 	DB            *sql.DB
 	EncryptionKey []byte
 	DhanBaseURL   string
+	quoteRL       *ratelimit.Store // 1 req/s per user
+	dataRL        *ratelimit.Store // 5 req/s per user
 }
 
-func (h *Handler) proxyDhan(endpoint string) http.HandlerFunc {
+func NewHandler(db *sql.DB, key []byte, baseURL string) *Handler {
+	return &Handler{
+		DB:            db,
+		EncryptionKey: key,
+		DhanBaseURL:   baseURL,
+		quoteRL:       ratelimit.NewStore(rate.Every(1), 1),
+		dataRL:        ratelimit.NewStore(5, 5),
+	}
+}
+
+func (h *Handler) proxyDhan(endpoint string, rl *ratelimit.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := r.Header.Get("X-User-ID")
 		if userID == "" {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		if err := rl.Get(userID).Wait(r.Context()); err != nil {
+			http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
 			return
 		}
 
@@ -62,7 +81,7 @@ func (h *Handler) proxyDhan(endpoint string) http.HandlerFunc {
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /market/ltp", h.proxyDhan("/marketfeed/ltp"))
-	mux.HandleFunc("POST /market/ohlc", h.proxyDhan("/marketfeed/ohlc"))
-	mux.HandleFunc("POST /market/quote", h.proxyDhan("/marketfeed/quote"))
+	mux.HandleFunc("POST /market/ltp", h.proxyDhan("/marketfeed/ltp", h.quoteRL))
+	mux.HandleFunc("POST /market/ohlc", h.proxyDhan("/marketfeed/ohlc", h.quoteRL))
+	mux.HandleFunc("POST /market/quote", h.proxyDhan("/marketfeed/quote", h.quoteRL))
 }

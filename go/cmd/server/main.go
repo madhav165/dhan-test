@@ -33,11 +33,7 @@ func main() {
 		InternalSecret: os.Getenv("INTERNAL_SECRET"),
 	}
 
-	mh := &market.Handler{
-		DB:            database,
-		EncryptionKey: key,
-		DhanBaseURL:   os.Getenv("DHAN_BASE_URL"),
-	}
+	mh := market.NewHandler(database, key, os.Getenv("DHAN_BASE_URL"))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /internal/broker-token", h.StoreToken)
