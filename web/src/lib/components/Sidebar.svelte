@@ -36,6 +36,14 @@
 </script>
 
 <aside>
+	<nav>
+		<a href="/strategies" class="nav-link" class:active={$page.url.pathname.startsWith('/strategies')}>
+			Strategies
+		</a>
+	</nav>
+
+	<hr />
+
 	<div class="section">
 		<p class="label">Brokers</p>
 
@@ -71,6 +79,34 @@
 </aside>
 
 <style>
+	nav {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		margin-bottom: 8px;
+	}
+
+	.nav-link {
+		border-radius: 6px;
+		color: var(--text-muted);
+		display: block;
+		font-size: 14px;
+		padding: 8px 10px;
+		text-decoration: none;
+		transition: background 0.15s, color 0.15s;
+	}
+
+	.nav-link:hover {
+		background: var(--bg);
+		color: var(--text);
+	}
+
+	.nav-link.active {
+		background: var(--bg);
+		color: var(--text);
+		font-weight: 500;
+	}
+
 	aside {
 		background: var(--bg-surface);
 		border-right: 1px solid var(--border);
