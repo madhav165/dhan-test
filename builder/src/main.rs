@@ -334,10 +334,6 @@ async fn process_run_job(
 
     let win_rate = if total_trades > 0 { total_wins as f64 / total_trades as f64 } else { 0.0 };
 
-    let total_pnl_s = total_pnl.to_string();
-    let win_rate_s = win_rate.to_string();
-    let max_drawdown_s = max_drawdown.to_string();
-
     let parquet = build_parquet(
         &col_sec, &col_seg, &col_ts,
         &col_open, &col_high, &col_low, &col_close, &col_vol, &col_sig,
@@ -348,9 +344,8 @@ async fn process_run_job(
 
     db.execute(
         "update backtest_runs set result_key=$1, num_trades=$2, \
-         total_pnl=$3::text::numeric, win_rate=$4::text::numeric, max_drawdown=$5::text::numeric \
-         where id=$6",
-        &[&result_key, &total_trades, &total_pnl_s, &win_rate_s, &max_drawdown_s, &run_id],
+         total_pnl=$3, win_rate=$4, max_drawdown=$5 where id=$6",
+        &[&result_key, &total_trades, &total_pnl, &win_rate, &max_drawdown, &run_id],
     ).await.map_err(|e| e.to_string())?;
 
     Ok(())
