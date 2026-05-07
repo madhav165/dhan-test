@@ -11,7 +11,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		headers: { app_id: DHAN_APP_ID, app_secret: DHAN_APP_SECRET },
 	})
 
-	if (!resp.ok) throw new Error(`Failed to generate consent: ${resp.status}`)
+	if (!resp.ok) redirect(302, '/login?error=invalid_client_id')
 
 	const { consentAppId } = await resp.json()
 	cookies.set('dhan_consent', consentAppId, { path: '/', httpOnly: true, maxAge: 600, sameSite: 'lax', secure: false })
