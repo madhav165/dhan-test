@@ -26,6 +26,27 @@
 	let interval = $state(first?.interval ?? 'day')
 	let indicators = $state<Indicator[]>(first?.indicators ?? [])
 
+	function focus(el: HTMLElement) { el.focus() }
+
+	// sidebar inline rename
+	let editingChartId = $state<string | null>(null)
+	let editingName = $state('')
+
+	function startRename(c: typeof data.charts[0], e: MouseEvent) {
+		if (c.id !== chartId) return // only rename active chart
+		e.stopPropagation()
+		editingChartId = c.id
+		editingName = c.name
+	}
+
+	function commitRename(c: typeof data.charts[0]) {
+		if (editingName.trim()) {
+			c.name = editingName.trim()
+			if (c.id === chartId) chartName = c.name
+		}
+		editingChartId = null
+	}
+
 	// indicator form
 	let newIndicatorType = $state<'sma' | 'ema' | 'rsi'>('sma')
 	let newIndicatorPeriod = $state(14)
@@ -166,7 +187,7 @@
 
 	function selectInstrument(inst: Instrument) {
 		instrument = inst
-		if (!chartName || chartName === 'New chart') chartName = inst.trading_symbol
+		if (!chartName || chartName === 'New chart') chartName = `${inst.trading_symbol} · ${interval}`
 		fetchCandles()
 	}
 
@@ -207,7 +228,17 @@
 		<ul class="chart-list">
 			{#each data.charts as c}
 				<li class="chart-item" class:active={c.id === chartId}>
-					<button onclick={() => selectChart(c)} class="chart-btn">{c.name}</button>
+					{#if editingChartId === c.id}
+						<input
+							class="chart-rename"
+							bind:value={editingName}
+							onblur={() => commitRename(c)}
+							onkeydown={(e) => { if (e.key === 'Enter') commitRename(c); if (e.key === 'Escape') editingChartId = null }}
+							use:focus
+						/>
+					{:else}
+						<button onclick={() => selectChart(c)} ondblclick={(e) => startRename(c, e)} class="chart-btn">{c.name}</button>
+					{/if}
 				</li>
 			{/each}
 		</ul>
@@ -346,6 +377,18 @@
 
 	.chart-item.active .chart-btn { color: var(--text); font-weight: 500; }
 	.chart-btn:hover { color: var(--text); }
+
+	.chart-rename {
+		background: var(--bg-surface);
+		border: 1px solid var(--accent);
+		border-radius: 4px;
+		color: var(--text);
+		font-family: 'Inter', sans-serif;
+		font-size: 0.8rem;
+		outline: none;
+		padding: 5px 8px;
+		width: 100%;
+	}
 
 	.main {
 		display: flex;
