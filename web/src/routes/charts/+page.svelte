@@ -6,7 +6,7 @@
 	import InstrumentSearch from '$lib/components/InstrumentSearch.svelte'
 	import { loadIndicators, runIndicator } from '$lib/wasm/indicators'
 
-	let { data, form } = $props()
+	let { data } = $props()
 
 	type Instrument = { security_id: string; exchange_segment: string; trading_symbol: string; custom_symbol: string }
 	type Indicator = { type: 'sma' | 'ema' | 'rsi'; period: number }
@@ -101,6 +101,80 @@
 	let scrollMax = $state(0)
 	let scrollThumb = $state(100)
 	let suppressScroll = false
+
+	// live mode
+	let live = $state(false)
+	let liveWs: WebSocket | null = null
+	let formingTime = 0      // UTC epoch seconds of current interval bucket
+	let formingOpen = 0
+	let formingHigh = 0
+	let formingLow = 0
+	let formingClose = 0
+	let prevVolume = 0       // cumulative volume from last tick (for delta calc)
+
+	const INTERVAL_SECONDS: Record<string, number> = {
+		'1min': 60, '5min': 300, '15min': 900, '25min': 1500, '60min': 3600
+	}
+
+	const IS_INTRADAY = $derived(interval !== 'day')
+
+	async function startLive() {
+		if (!instrument || !IS_INTRADAY) return
+		stopLive()
+		const res = await fetch(`/api/live?security_id=${instrument.security_id}&exchange_segment=${instrument.exchange_segment}`)
+		if (!res.ok) { error = 'Failed to get live token'; return }
+		const { token } = await res.json()
+		const ws = new WebSocket(`${data.goWsUrl}/chart/live?token=${token}`)
+		liveWs = ws
+		ws.onmessage = ({ data: raw }) => {
+			const tick: { ltp: number; ltt: number; vol: number } = JSON.parse(raw)
+			if (tick.ltt === 0) return
+			const ivSec = INTERVAL_SECONDS[interval]
+			const bucketTime = Math.floor(tick.ltt / ivSec) * ivSec
+			if (bucketTime !== formingTime) {
+				formingTime = bucketTime
+				formingOpen = tick.ltp
+				formingHigh = tick.ltp
+				formingLow = tick.ltp
+				prevVolume = tick.vol
+			} else {
+				if (tick.ltp > formingHigh) formingHigh = tick.ltp
+				if (tick.ltp < formingLow) formingLow = tick.ltp
+			}
+			formingClose = tick.ltp
+			const deltaVol = Math.max(0, tick.vol - prevVolume)
+			prevVolume = tick.vol
+			candleSeries.update({
+				time: bucketTime as any,
+				open: formingOpen,
+				high: formingHigh,
+				low: formingLow,
+				close: formingClose,
+			})
+			volumeSeries.update({
+				time: bucketTime as any,
+				value: deltaVol,
+				color: formingClose >= formingOpen ? '#22c55e44' : '#ef444444',
+			})
+			chart.timeScale().scrollToRealTime()
+		}
+		ws.onerror = () => { error = 'Live feed error'; live = false }
+		ws.onclose = () => { if (live) { live = false } }
+	}
+
+	function stopLive() {
+		if (liveWs) { liveWs.close(); liveWs = null }
+		formingTime = 0
+		prevVolume = 0
+	}
+
+	$effect(() => {
+		if (live) {
+			untrack(() => startLive())
+		} else {
+			stopLive()
+		}
+	})
 
 	onMount(async () => {
 		const IST_OFFSET = 5.5 * 60 * 60 // +5:30 in seconds
@@ -274,6 +348,7 @@
 	}
 
 	function selectInstrument(inst: Instrument) {
+		live = false
 		instrument = inst
 		chartName = `${inst.trading_symbol} · ${interval}`
 		fetchCandles(fromDate, toDate)
@@ -384,9 +459,20 @@
 				{/each}
 			</select>
 
-			<input type="date" class="date-input" bind:value={fromDate} max={toDate} onchange={() => instrument && fetchCandles()} />
+			<input type="date" class="date-input" bind:value={fromDate} max={toDate} onchange={() => instrument && fetchCandles()} disabled={live} />
 			<span class="date-sep">→</span>
-			<input type="date" class="date-input" bind:value={toDate} min={fromDate} onchange={() => instrument && fetchCandles()} />
+			<input type="date" class="date-input" bind:value={toDate} min={fromDate} onchange={() => instrument && fetchCandles()} disabled={live} />
+
+			{#if IS_INTRADAY && instrument}
+				<button
+					class="live-btn"
+					class:live-on={live}
+					onclick={() => { live = !live }}
+					title={live ? 'Stop live feed' : 'Start live feed'}
+				>
+					<span class="live-dot"></span>{live ? 'Live' : 'Live'}
+				</button>
+			{/if}
 
 			<span class="spacer"></span>
 
@@ -816,6 +902,46 @@
 	}
 
 	.btn-primary:hover { background: var(--accent-hover); }
+
+	.live-btn {
+		align-items: center;
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		color: var(--text-muted);
+		cursor: pointer;
+		display: flex;
+		font-family: 'Inter', sans-serif;
+		font-size: 0.75rem;
+		gap: 5px;
+		padding: 5px 8px;
+		white-space: nowrap;
+	}
+
+	.live-btn:hover { border-color: var(--text-muted); color: var(--text); }
+
+	.live-btn.live-on {
+		border-color: #22c55e;
+		color: #22c55e;
+	}
+
+	.live-dot {
+		background: var(--text-faint);
+		border-radius: 50%;
+		display: inline-block;
+		height: 6px;
+		width: 6px;
+	}
+
+	.live-btn.live-on .live-dot {
+		animation: pulse 1.2s ease-in-out infinite;
+		background: #22c55e;
+	}
+
+	@keyframes pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.3; }
+	}
 
 	.btn-secondary {
 		background: none;

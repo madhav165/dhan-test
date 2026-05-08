@@ -1,3 +1,4 @@
+import { GO_URL } from '$env/static/private'
 import { db } from '$lib/server/db'
 import { fail, redirect } from '@sveltejs/kit'
 import type { Actions, PageServerLoad } from './$types'
@@ -10,7 +11,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 		 order by updated_at desc`,
 		[locals.user!.id]
 	)
-	return { charts: result.rows }
+	const goWsUrl = GO_URL.replace(/^http/, 'ws')
+	return { charts: result.rows, goWsUrl }
 }
 
 export const actions: Actions = {
