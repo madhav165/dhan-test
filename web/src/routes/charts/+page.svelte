@@ -313,11 +313,17 @@
 		}))
 		volumeSeries?.setData(volData)
 
-		const oiData: HistogramData[] = candles.map(c => ({
-			time: c.timestamp as any,
-			value: c.oi,
-		}))
-		oiSeries?.setData(oiData)
+		const isFnO = instrument && !['NSE_E', 'BSE_E', 'NSE_I'].includes(instrument.exchange_segment)
+		if (isFnO) {
+			const oiData: HistogramData[] = candles.map(c => ({
+				time: c.timestamp as any,
+				value: c.oi,
+			}))
+			oiSeries?.setData(oiData)
+			oiSeries?.applyOptions({ visible: true })
+		} else {
+			oiSeries?.applyOptions({ visible: false })
+		}
 
 		const total = candles.length
 		const visible = Math.min(100, total)
