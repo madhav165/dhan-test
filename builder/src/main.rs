@@ -18,6 +18,8 @@ use std::cell::UnsafeCell;
 use indicators::rsi::rsi;
 use indicators::sma::sma;
 use indicators::ema::ema;
+use indicators::macd::macd;
+use indicators::bb::bb;
 use indicators::vwap::vwap;
 
 struct State { prices: Vec<f64>, volumes: Vec<f64>, signals: Vec<u8> }
