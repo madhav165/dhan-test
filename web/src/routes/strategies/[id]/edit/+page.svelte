@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { untrack } from 'svelte'
 	import { enhance } from '$app/forms'
-	import RustEditor from '$lib/components/RustEditor.svelte'
+	import RuleBuilder from '$lib/components/rules/RuleBuilder.svelte'
+	import type { RuleSet } from '$lib/types/rules'
 
 	let { data } = $props()
 
-	let code = $state(untrack(() => data.strategy.code ?? ''))
 	let name = $state(untrack(() => data.strategy.name))
+	let initialRules: RuleSet | null = untrack(() => data.strategy.rule_json ?? null)
 </script>
 
 <div class="header">
@@ -21,13 +22,8 @@
 	</div>
 
 	<div class="field">
-		<label for="code">Signal logic</label>
-		<p class="hint">
-			Saving will re-compile and replace the existing WASM. Use <code>prices</code> (close prices), <code>i</code> (current index).
-			Return <code>1</code> to buy, <code>2</code> to sell, <code>0</code> to hold.
-		</p>
-		<RustEditor value={code} onchange={(v) => (code = v)} />
-		<input type="hidden" name="code" value={code} />
+		<label>Signal rules</label>
+		<RuleBuilder {initialRules} />
 	</div>
 
 	<div class="footer">
@@ -38,18 +34,12 @@
 
 <style>
 	.header { margin-bottom: 24px; }
-
 	.back { color: var(--text-muted); font-size: 0.8rem; text-decoration: none; }
 	.back:hover { color: var(--text); }
-
 	h1 { font-size: 1.25rem; font-weight: 600; margin: 8px 0 0; }
-
-	.form { display: flex; flex-direction: column; gap: 20px; max-width: 680px; }
-
+	.form { display: flex; flex-direction: column; gap: 20px; max-width: 720px; }
 	.field { display: flex; flex-direction: column; gap: 6px; }
-
 	label { color: var(--text-muted); font-size: 0.8rem; font-weight: 500; }
-
 	input[type='text'] {
 		background: var(--bg-surface);
 		border: 1px solid var(--border);
@@ -60,14 +50,8 @@
 		outline: none;
 		padding: 8px 10px;
 	}
-
 	input[type='text']:focus { border-color: var(--accent); }
-
-	.hint { color: var(--text-muted); font-size: 0.8rem; margin: 0; }
-	.hint code { background: var(--bg-surface); border-radius: 3px; font-size: 0.75rem; padding: 1px 4px; }
-
 	.footer { display: flex; gap: 12px; justify-content: flex-end; padding-top: 8px; }
-
 	.btn-primary {
 		background: var(--accent);
 		border: none;
@@ -79,9 +63,7 @@
 		font-weight: 500;
 		padding: 8px 20px;
 	}
-
 	.btn-primary:hover { background: var(--accent-hover); }
-
 	.btn-secondary {
 		border: 1px solid var(--border);
 		border-radius: 6px;
@@ -90,6 +72,5 @@
 		padding: 8px 20px;
 		text-decoration: none;
 	}
-
 	.btn-secondary:hover { color: var(--text); }
 </style>

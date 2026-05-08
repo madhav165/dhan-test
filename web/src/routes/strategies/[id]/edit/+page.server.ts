@@ -1,21 +1,14 @@
-import { GO_URL } from '$env/static/private'
 import { db } from '$lib/server/db'
 import { error, redirect } from '@sveltejs/kit'
 import type { Actions, PageServerLoad } from './$types'
 
 export const load: PageServerLoad = async ({ locals, params }) => {
 	const result = await db.query(
-		`select id, name from strategies where id = $1 and user_id = $2`,
+		`select id, name, rule_json from strategies where id = $1 and user_id = $2`,
 		[params.id, locals.user!.id]
 	)
 	if (result.rows.length === 0) error(404, 'Strategy not found')
-
-	const resp = await fetch(`${GO_URL}/chart/strategy-source?strategy_id=${params.id}`, {
-		headers: { 'X-User-ID': locals.user!.id },
-	})
-	const code = resp.ok ? await resp.text() : ''
-
-	return { strategy: { ...result.rows[0], code } }
+	return { strategy: result.rows[0] }
 }
 
 export const actions: Actions = {
@@ -23,12 +16,13 @@ export const actions: Actions = {
 		const form = await request.formData()
 		const name = form.get('name')?.toString().trim()
 		const code = form.get('code')?.toString().trim()
+		const rule_json = form.get('rule_json')?.toString() ?? null
 
 		if (!name || !code) error(400, 'Name and code are required')
 
 		await db.query(
-			`update strategies set name = $1, source_key = $2, wasm_key = null where id = $3 and user_id = $4`,
-			[name, code, params.id, locals.user!.id]
+			`update strategies set name = $1, source_key = $2, wasm_key = null, rule_json = $3 where id = $4 and user_id = $5`,
+			[name, code, rule_json ? JSON.parse(rule_json) : null, params.id, locals.user!.id]
 		)
 		await db.query(`insert into build_jobs (strategy_id) values ($1)`, [params.id])
 

@@ -11,13 +11,14 @@ export const actions: Actions = {
 		if (!name) return fail(400, { error: 'Name is required' })
 		if (!code) return fail(400, { error: 'Signal logic is required' })
 
+		const rule_json = form.get('rule_json')?.toString() ?? null
+
 		const stratResult = await db.query(
-			`insert into strategies (user_id, name) values ($1, $2) returning id`,
-			[locals.user!.id, name]
+			`insert into strategies (user_id, name, rule_json) values ($1, $2, $3) returning id`,
+			[locals.user!.id, name, rule_json ? JSON.parse(rule_json) : null]
 		)
 		const strategyId = stratResult.rows[0].id
 
-		// Store raw snippet temporarily — builder will wrap + compile it
 		await db.query(
 			`update strategies set source_key = $1 where id = $2`,
 			[code, strategyId]
