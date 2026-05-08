@@ -94,14 +94,19 @@
 			chart.timeScale().fitContent()
 
 			const key = `${inst.security_id}:${inst.exchange_segment}`
-			const sigs = allSignals[key] ?? []
-			const markers = sigs
-				.filter(s => s.sig === 1 || s.sig === 2)
-				.sort((a, b) => a.ts - b.ts)
-				.map(s => s.sig === 1
-					? { time: s.ts as any, position: 'belowBar' as const, color: '#22c55e', shape: 'arrowUp' as const, text: 'B' }
-					: { time: s.ts as any, position: 'aboveBar' as const, color: '#ef4444', shape: 'arrowDown' as const, text: 'S' }
-				)
+			const sigs = (allSignals[key] ?? []).sort((a, b) => a.ts - b.ts)
+			// only mark signal transitions, not every candle with the same signal
+			const markers: any[] = []
+			let prevSig = 0
+			for (const s of sigs) {
+				if (s.sig !== prevSig && (s.sig === 1 || s.sig === 2)) {
+					markers.push(s.sig === 1
+						? { time: s.ts as any, position: 'belowBar' as const, color: '#22c55e', shape: 'arrowUp' as const, text: 'B' }
+						: { time: s.ts as any, position: 'aboveBar' as const, color: '#ef4444', shape: 'arrowDown' as const, text: 'S' }
+					)
+				}
+				prevSig = s.sig
+			}
 			if (!markersPlugin) {
 				markersPlugin = createSeriesMarkers(candleSeries, markers)
 			} else {
