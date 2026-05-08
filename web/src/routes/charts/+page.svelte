@@ -252,6 +252,7 @@
 		if (!chart || !chartReady || !isMobile) return
 		if (mobileView === 'volume') {
 			candleSeries?.applyOptions({ visible: false })
+			chart.priceScale('right').applyOptions({ visible: false })
 			if (!volumeSeries) {
 				volumeSeries = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: 'vol' }, 1)
 				if (candles.length > 0) volumeSeries.setData(candles.map(c => ({
@@ -260,9 +261,10 @@
 				})))
 			}
 			volumeSeries.applyOptions({ visible: true })
-			volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0 } })
+			volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0 }, visible: true })
 		} else {
 			candleSeries?.applyOptions({ visible: true })
+			chart.priceScale('right').applyOptions({ visible: true })
 			if (volumeSeries) {
 				chart.removeSeries(volumeSeries)
 				volumeSeries = undefined as any
