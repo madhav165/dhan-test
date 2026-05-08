@@ -148,8 +148,8 @@ func (h *Handler) StrategySource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Before first build, source_key holds the raw snippet directly
-	if len(sourceKey.String) > 0 && sourceKey.String[0] != 's' {
+	// Before first build, source_key holds the raw snippet directly (no slashes)
+	if !strings.Contains(sourceKey.String, "/") {
 		w.Header().Set("Content-Type", "text/plain")
 		w.Write([]byte(sourceKey.String))
 		return
