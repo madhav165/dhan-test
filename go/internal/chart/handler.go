@@ -56,7 +56,6 @@ func (h *Handler) Candles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	today := time.Now().Format("2006-01-02")
-	isIntraday := interval != "day"
 
 	// cold cache: fetch full range if no data exists
 	var count int
@@ -67,18 +66,42 @@ func (h *Handler) Candles(w http.ResponseWriter, r *http.Request) {
 		securityID, exchangeSegment, interval, from, to,
 	).Scan(&count)
 
-	if count == 0 {
-		log.Printf("chart: fetching candles for %s %s %s %s–%s", securityID, exchangeSegment, interval, from, to)
-		if err := candles.FetchAndStore(h.DB, h.DhanBaseURL, clientID, accessToken, securityID, exchangeSegment, interval, from, to); err != nil {
+	// Fetch any missing data before the earliest stored candle in the requested range.
+	var minDate string
+	h.DB.QueryRowContext(r.Context(), `
+		select min(timestamp::date)::text from candles
+		where security_id=$1 and exchange_segment=$2 and interval=$3`,
+		securityID, exchangeSegment, interval,
+	).Scan(&minDate)
+
+	if count == 0 || (minDate != "" && from < minDate) {
+		fetchFrom := from
+		fetchTo := to
+		if count > 0 && minDate != "" {
+			fetchTo = minDate
+		}
+		log.Printf("chart: fetching candles for %s %s %s %s–%s", securityID, exchangeSegment, interval, fetchFrom, fetchTo)
+		if err := candles.FetchAndStore(h.DB, h.DhanBaseURL, clientID, accessToken, securityID, exchangeSegment, interval, fetchFrom, fetchTo); err != nil {
 			log.Printf("chart: fetch error: %v", err)
 			http.Error(w, "failed to fetch candles: "+err.Error(), http.StatusBadGateway)
 			return
 		}
-	} else if isIntraday && to >= today {
-		// refresh today's candles with update-on-conflict so forming candles get latest OHLCV
-		log.Printf("chart: refreshing today's intraday candles for %s %s %s", securityID, exchangeSegment, interval)
-		if err := candles.FetchAndStore(h.DB, h.DhanBaseURL, clientID, accessToken, securityID, exchangeSegment, interval, today, today, true); err != nil {
-			log.Printf("chart: today refresh error: %v", err)
+	}
+
+	if to >= today {
+		// Refresh from the last stored candle date so gaps from multi-day absences are filled.
+		var maxDate string
+		h.DB.QueryRowContext(r.Context(), `
+			select max(timestamp::date)::text from candles
+			where security_id=$1 and exchange_segment=$2 and interval=$3`,
+			securityID, exchangeSegment, interval,
+		).Scan(&maxDate)
+		if maxDate == "" {
+			maxDate = today
+		}
+		log.Printf("chart: refreshing candles for %s %s %s from %s", securityID, exchangeSegment, interval, maxDate)
+		if err := candles.FetchAndStore(h.DB, h.DhanBaseURL, clientID, accessToken, securityID, exchangeSegment, interval, maxDate, today, true); err != nil {
+			log.Printf("chart: refresh error: %v", err)
 			// non-fatal: serve what we have in DB
 		}
 	}
