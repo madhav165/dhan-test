@@ -5,7 +5,9 @@ LOCAL   = $(COMPOSE) --profile local
 
 ## Show this help
 help:
-	@grep -E '^## ' Makefile | sed 's/^## //'
+	@grep -E '^(## .+|[a-zA-Z%_-]+:)' Makefile | \
+		sed -E 's/^## (.+)/  \1/' | \
+		sed -E 's/^([a-zA-Z%_-]+):.*/\n\1/'
 
 ## Start Go service only (needs external DB)
 up:
