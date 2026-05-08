@@ -380,8 +380,10 @@
 		display: flex;
 		flex-direction: column;
 		flex-shrink: 0;
-		overflow-y: auto;
+		overflow: visible;
+		position: relative;
 		width: 160px;
+		z-index: 10;
 	}
 
 	.sidebar-header {
