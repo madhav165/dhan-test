@@ -82,6 +82,14 @@
 	let candles = $state<Candle[]>([])
 	let loading = $state(false)
 	let error = $state('')
+	let settingsOpen = $state(false)
+	let isMobile = $state(false)
+
+	onMount(() => {
+		const mq = window.matchMedia('(max-width: 768px)')
+		isMobile = mq.matches
+		mq.addEventListener('change', e => { isMobile = e.matches })
+	})
 
 	const INTERVALS = ['1min', '5min', '15min', '25min', '60min', 'day']
 
@@ -148,7 +156,7 @@
 				low: formingLow,
 				close: formingClose,
 			})
-			volumeSeries.update({
+			volumeSeries?.update({
 				time: bucketTime as any,
 				value: deltaVol,
 				color: formingClose >= formingOpen ? '#22c55e44' : '#ef444444',
@@ -212,11 +220,13 @@
 			borderUpColor: '#22c55e', borderDownColor: '#ef4444',
 			wickUpColor: '#22c55e', wickDownColor: '#ef4444',
 		})
-		volumeSeries = chart.addSeries(HistogramSeries, {
-			priceFormat: { type: 'volume' },
-			priceScaleId: '',
-		}, 1)
-		volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.7, bottom: 0 } })
+		if (!window.matchMedia('(max-width: 768px)').matches) {
+			volumeSeries = chart.addSeries(HistogramSeries, {
+				priceFormat: { type: 'volume' },
+				priceScaleId: '',
+			}, 1)
+			volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.7, bottom: 0 } })
+		}
 
 		if (instrument) await fetchCandles()
 		chartReady = true
@@ -256,7 +266,7 @@
 			value: c.volume,
 			color: c.close >= c.open ? '#22c55e44' : '#ef444444',
 		}))
-		volumeSeries.setData(volData)
+		volumeSeries?.setData(volData)
 
 		const total = candles.length
 		const visible = Math.min(100, total)
@@ -350,11 +360,13 @@
 				borderUpColor: '#22c55e', borderDownColor: '#ef4444',
 				wickUpColor: '#22c55e', wickDownColor: '#ef4444',
 			})
-			volumeSeries = chart.addSeries(HistogramSeries, {
-				priceFormat: { type: 'volume' },
-				priceScaleId: '',
-			}, 1)
-			volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.7, bottom: 0 } })
+			if (!window.matchMedia('(max-width: 768px)').matches) {
+				volumeSeries = chart.addSeries(HistogramSeries, {
+					priceFormat: { type: 'volume' },
+					priceScaleId: '',
+				}, 1)
+				volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.7, bottom: 0 } })
+			}
 		}
 	}
 
@@ -470,41 +482,59 @@
 				{/each}
 			</select>
 
-			<input type="date" class="date-input" bind:value={fromDate} min={IS_INTRADAY ? new Date(Date.now() - 5*365*24*60*60*1000).toISOString().slice(0,10) : undefined} max={toDate} onchange={() => instrument && fetchCandles()} disabled={live} />
-			<span class="date-sep">→</span>
-			<input type="date" class="date-input" bind:value={toDate} min={fromDate} onchange={() => instrument && fetchCandles()} disabled={live} />
+			<span class="toolbar-secondary" class:hidden={isMobile && !settingsOpen}>
+				<input type="date" class="date-input" bind:value={fromDate} min={IS_INTRADAY ? new Date(Date.now() - 5*365*24*60*60*1000).toISOString().slice(0,10) : undefined} max={toDate} onchange={() => instrument && fetchCandles()} disabled={live} />
+				<span class="date-sep">→</span>
+				<input type="date" class="date-input" bind:value={toDate} min={fromDate} onchange={() => instrument && fetchCandles()} disabled={live} />
 
-			{#if IS_INTRADAY && instrument}
-				<button
-					class="live-btn"
-					class:live-on={live}
-					onclick={() => { live = !live }}
-					title={live ? 'Stop live feed' : 'Start live feed'}
-				>
-					<span class="live-dot"></span>{live ? 'Live' : 'Live'}
-				</button>
-			{/if}
+				{#if IS_INTRADAY && instrument}
+					<button
+						class="live-btn"
+						class:live-on={live}
+						onclick={() => { live = !live }}
+						title={live ? 'Stop live feed' : 'Start live feed'}
+					>
+						<span class="live-dot"></span>{live ? 'Live' : 'Live'}
+					</button>
+				{/if}
+			</span>
 
 			<span class="spacer"></span>
 
-			<input class="chart-name" bind:value={chartName} placeholder="Chart name" />
-
-			<form method="POST" action="?/save" use:enhance={({ formData }) => {
-				formData.set('indicators', JSON.stringify(indicators))
-				if (chartId) formData.set('id', chartId)
-				return async ({ result, update }) => {
-					if (result.type === 'success' && result.data?.id) chartId = result.data.id as string
-					await update()
-					await invalidateAll()
-				}
-			}}>
-				<input type="hidden" name="name" value={chartName} />
-				<input type="hidden" name="security_id" value={instrument?.security_id ?? ''} />
-				<input type="hidden" name="exchange_segment" value={instrument?.exchange_segment ?? ''} />
-				<input type="hidden" name="interval" value={interval} />
-				<button type="submit" class="btn-primary" disabled={!instrument}>Save chart</button>
-			</form>
+			{#if isMobile}
+				<button class="settings-btn" class:active={settingsOpen} onclick={() => settingsOpen = !settingsOpen} title="Settings">⚙</button>
+			{:else}
+				<input class="chart-name" bind:value={chartName} placeholder="Chart name" />
+				<form method="POST" action="?/save" use:enhance={({ formData }) => {
+					formData.set('indicators', JSON.stringify(indicators))
+					if (chartId) formData.set('id', chartId)
+					return async ({ result, update }) => {
+						if (result.type === 'success' && result.data?.id) chartId = result.data.id as string
+						await update()
+						await invalidateAll()
+					}
+				}}>
+					<input type="hidden" name="name" value={chartName} />
+					<input type="hidden" name="security_id" value={instrument?.security_id ?? ''} />
+					<input type="hidden" name="exchange_segment" value={instrument?.exchange_segment ?? ''} />
+					<input type="hidden" name="interval" value={interval} />
+					<button type="submit" class="btn-primary" disabled={!instrument}>Save chart</button>
+				</form>
+			{/if}
 		</div>
+
+		{#if isMobile && settingsOpen}
+			<div class="mobile-settings">
+				<input type="date" class="date-input" bind:value={fromDate} min={IS_INTRADAY ? new Date(Date.now() - 5*365*24*60*60*1000).toISOString().slice(0,10) : undefined} max={toDate} onchange={() => instrument && fetchCandles()} disabled={live} />
+				<span class="date-sep">→</span>
+				<input type="date" class="date-input" bind:value={toDate} min={fromDate} onchange={() => instrument && fetchCandles()} disabled={live} />
+				{#if IS_INTRADAY && instrument}
+					<button class="live-btn" class:live-on={live} onclick={() => { live = !live }}>
+						<span class="live-dot"></span>Live
+					</button>
+				{/if}
+			</div>
+		{/if}
 
 		{#if error}
 			<p class="error">{error}</p>
@@ -532,6 +562,7 @@
 		{/if}
 	</div>
 
+	{#if !isMobile}
 	<div class="panel">
 		<p class="label">Indicators</p>
 
@@ -560,6 +591,7 @@
 			</div>
 		{/if}
 	</div>
+	{/if}
 </div>
 
 <style>
@@ -579,6 +611,10 @@
 		position: relative;
 		width: 160px;
 		z-index: 10;
+	}
+
+	@media (max-width: 768px) {
+		.sidebar { display: none; }
 	}
 
 	.sidebar-header {
@@ -954,4 +990,41 @@
 		50% { opacity: 0.3; }
 	}
 
+	.settings-btn {
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		color: var(--text-muted);
+		cursor: pointer;
+		font-size: 16px;
+		padding: 4px 8px;
+		line-height: 1;
+	}
+
+	.settings-btn.active {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+
+	.mobile-settings {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 8px 12px;
+		background: var(--bg-surface);
+		border-bottom: 1px solid var(--border);
+		flex-wrap: wrap;
+	}
+
+	@media (max-width: 768px) {
+		.toolbar {
+			flex-wrap: nowrap;
+			gap: 6px;
+			padding: 8px 10px;
+		}
+
+		.chart-list-sidebar {
+			display: none;
+		}
+	}
 </style>

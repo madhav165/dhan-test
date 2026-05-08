@@ -3,6 +3,7 @@
 	import { user, brokerConnected } from '$lib/stores/auth'
 	import Header from '$lib/components/Header.svelte'
 	import Sidebar from '$lib/components/Sidebar.svelte'
+	import BottomNav from '$lib/components/BottomNav.svelte'
 	import { page } from '$app/stores'
 
 	let { children, data } = $props()
@@ -23,6 +24,7 @@
 		<Sidebar />
 		<main class:full-bleed={$page.url.pathname.startsWith('/charts')}>{@render children()}</main>
 	</div>
+	<BottomNav />
 {:else}
 	{@render children()}
 {/if}
@@ -47,5 +49,18 @@
 	main.full-bleed {
 		padding: 0;
 		overflow: hidden;
+	}
+
+	@media (max-width: 768px) {
+		main {
+			margin-left: 0;
+			width: 100%;
+			padding: 20px 16px 80px;
+			height: calc(100vh - 56px);
+		}
+
+		main.full-bleed {
+			padding: 0 0 60px;
+		}
 	}
 </style>

@@ -130,6 +130,10 @@
 		width: 200px;
 	}
 
+	@media (max-width: 768px) {
+		aside { display: none; }
+	}
+
 	.section {
 		display: flex;
 		flex-direction: column;
