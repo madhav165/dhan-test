@@ -54,47 +54,18 @@ cd web && npm install && cd ..
 
 ## Running locally
 
-### Start everything (Postgres + Go)
-
-```bash
-docker-compose --profile local up --build
-```
-
-### Start without local DB (using external DB)
-
-```bash
-docker-compose up --build
-```
-
-### Start only the DB
-
-```bash
-docker-compose --profile local up db
-```
-
-### Stop
-
-```bash
-docker-compose --profile local down
-```
-
-### Stop and wipe DB
-
-```bash
-docker-compose --profile local down -v
-```
-
-### Run web dev server
-
-```bash
-cd web && npm run dev
-```
-
-### Run Go locally (without Docker)
-
-```bash
-cd go && go run ./cmd/server
-```
+| Command | Description |
+|---------|-------------|
+| `make up-local` | Start full local stack (Postgres, MinIO, Builder, Go) |
+| `make down-local` | Stop local stack |
+| `make down-clean` | Stop local stack and wipe all volumes |
+| `make up` | Start Go service only (uses external DB) |
+| `make down` | Stop Go service |
+| `make logs` | Stream logs from all services |
+| `make logs-go` | Stream logs from a specific service (`logs-builder`, etc.) |
+| `make build` | Rebuild all images without cache |
+| `make web` | Run SvelteKit dev server |
+| `make go` | Run Go server locally without Docker |
 
 ## Services
 
