@@ -7,7 +7,7 @@
 	let token = $state('')
 
 	const botUrl = `https://t.me/${data.botName}`
-	const qrUrl = `https://chart.googleapis.com/chart?chs=160x160&cht=qr&chl=${encodeURIComponent(botUrl)}`
+	const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(botUrl)}`
 </script>
 
 <div class="page">
