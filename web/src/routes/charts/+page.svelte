@@ -280,7 +280,7 @@
 							<div class="menu-wrap">
 								<button class="dots-btn" onclick={(e) => toggleMenu(c.id, e)}>···</button>
 								{#if menuOpenId === c.id}
-									<div class="menu" role="menu">
+									<div class="menu" role="menu" onclick={(e) => e.stopPropagation()}>
 										<button onclick={() => { startRename(c); closeMenu() }}>Rename</button>
 										<form method="POST" action="?/delete" use:enhance={() => async ({ update }) => { await update(); await invalidateAll() }}>
 											<input type="hidden" name="id" value={c.id} />
