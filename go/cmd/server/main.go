@@ -1,11 +1,15 @@
 package main
 
 import (
+	"embed"
 	"encoding/hex"
 	"log"
 	"net/http"
 	"os"
 
+	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/database/postgres"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/joho/godotenv"
 	"github.com/madhav165/dhan-test/go/internal/broker"
 	"github.com/madhav165/dhan-test/go/internal/chart"
@@ -15,6 +19,9 @@ import (
 	"github.com/madhav165/dhan-test/go/internal/run"
 )
 
+//go:embed migrations
+var migrationsFS embed.FS
+
 func main() {
 	godotenv.Load("../.env")
 
@@ -23,6 +30,23 @@ func main() {
 		log.Fatalf("failed to connect to db: %v", err)
 	}
 	defer database.Close()
+
+	driver, err := postgres.WithInstance(database, &postgres.Config{})
+	if err != nil {
+		log.Fatalf("migrate driver: %v", err)
+	}
+	src, err := iofs.New(migrationsFS, "migrations")
+	if err != nil {
+		log.Fatalf("migrate source: %v", err)
+	}
+	m, err := migrate.NewWithInstance("iofs", src, "postgres", driver)
+	if err != nil {
+		log.Fatalf("migrate init: %v", err)
+	}
+	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+		log.Fatalf("migrate up: %v", err)
+	}
+	log.Println("migrations up to date")
 
 	keyHex := os.Getenv("ENCRYPTION_KEY")
 	key, err := hex.DecodeString(keyHex)

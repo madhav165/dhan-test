@@ -1,7 +1,7 @@
 COMPOSE = docker compose
 LOCAL   = $(COMPOSE) --profile local
 
-.PHONY: help up up-local down down-local down-clean logs build wasm web migrate
+.PHONY: help up up-local down down-local down-clean logs build wasm web
 
 ## Show this help
 help:
@@ -14,11 +14,6 @@ up:
 ## Start full local stack (Postgres + MinIO + Builder + Go)
 up-local: wasm
 	$(LOCAL) up --build -d
-	@echo "Waiting for Postgres..."
-	@set -a && . ./.env && set +a && \
-	  until pg_isready -d "$$DATABASE_URL" -q; do sleep 1; done && \
-	  migrate -path migrations -database "$$DATABASE_URL" up && \
-	  echo "Migrations done."
 
 ## Stop Go service
 down:
@@ -47,10 +42,6 @@ build:
 wasm:
 	cd rust && cargo build -p indicators-wasm --target wasm32-unknown-unknown --release
 	cp rust/target/wasm32-unknown-unknown/release/indicators_wasm.wasm web/static/indicators.wasm
-
-## Run pending migrations (reads DATABASE_URL from .env)
-migrate:
-	@set -a && . ./.env && set +a && migrate -path migrations -database "$$DATABASE_URL" up
 
 ## Run web dev server
 web:

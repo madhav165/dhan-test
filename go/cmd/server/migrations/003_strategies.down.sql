@@ -1,0 +1,12 @@
+drop index if exists idx_live_signals_policy;
+drop index if exists idx_policies_strategy;
+drop index if exists idx_backtest_runs_strategy;
+drop index if exists idx_strategies_user;
+drop index if exists idx_candles_lookup;
+drop table if exists live_signals;
+drop table if exists policy_instruments;
+drop table if exists policies;
+drop table if exists backtest_run_instruments;
+drop table if exists backtest_runs;
+drop table if exists strategies;
+drop table if exists candles;
