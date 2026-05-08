@@ -32,9 +32,13 @@ Browser  ──▶  SvelteKit (web)  ──▶  Postgres
 Builder (Rust)   ──▶  Postgres  (polls job queues)
                  └──▶  MinIO    (reads WASM, writes parquet)
 
-Policy worker    ──▶  Postgres  (reads policies/candles, writes live_signals)
+Policy worker    ──▶  Postgres  (reads policies/candles, writes live_signals + trade_jobs)
 (Rust)           └──▶  Dhan WebSocket feed  (live ticks)
                  └──▶  Telegram Bot API     (alerts)
+
+Trade worker     ──▶  Postgres  (polls trade_jobs, writes trade_positions)
+(Rust)           └──▶  Dhan REST API  (margin check, order placement, order status)
+                 └──▶  Telegram Bot API  (trade confirmations and rejections)
 ```
 
 **SvelteKit** handles all UI and server-side data loading. Forms submit directly to `+page.server.ts` actions which write to Postgres. There is no REST API between the frontend and the database — SvelteKit talks to Postgres directly via the `pg` client.
@@ -45,15 +49,19 @@ Policy worker    ──▶  Postgres  (reads policies/candles, writes live_signa
 - `build_jobs` — compiles a strategy's Rust source to WebAssembly and stores the `.wasm` in MinIO
 - `run_jobs` — executes a backtest once candle data is ready
 
-**Policy worker** is a Rust binary that executes active policies against live market data and sends alerts. It is triggered by the Go service when a broker token is refreshed, and also runs a 30-second poll loop.
+**Policy worker** is a Rust binary that executes active policies against live market data. It is triggered by the Go service when a broker token is refreshed, and also runs a 30-second poll loop. For `alert` mode policies it sends Telegram messages directly. For `trade` mode policies it writes to `trade_jobs` and lets the trade worker handle execution.
+
+**Trade worker** is a Rust binary that polls `trade_jobs` and handles order lifecycle: pre-trade validation, order placement, status polling, and position tracking.
 
 ### Job queues
 
-Both queues are plain Postgres tables polled every 3 seconds. No message broker.
+All queues are plain Postgres tables polled on a fixed interval. No message broker.
 
 `build_jobs` status flow: `pending → building → done / failed`
 
 `run_jobs` status flow: `pending → ready → running → done / failed`
+
+`trade_jobs` status flow: `pending → checking → placing → polling → done / failed`
 
 The Go candle worker owns the `pending → ready` transition. It checks whether the candles table already has data for the requested instruments, interval, and date range. If not, it calls Dhan's historical API and upserts the rows. Once all instruments are covered it marks the job `ready`.
 
@@ -74,6 +82,23 @@ If the user connects before market opens (e.g. 8 AM), intraday runners are not s
 Intraday runners stop when the WebSocket closes (market close, token expiry, or disconnect). The user's entry is removed from the in-memory active set so the poll loop can restart them if the connection drops and reconnects within market hours.
 
 **Alert delivery** writes a row to `live_signals` (policy, instrument, signal, price, timestamp) and calls the Telegram Bot API with the user's configured `telegram_chat_id`. The policy worker talks to Telegram directly — the Go service is not involved in the signal path.
+
+**Trade mode** — when a policy's mode is `trade`, the policy worker writes a `trade_jobs` row instead of sending a signal alert, then sends a "trade queued" Telegram message. A deterministic `correlation_id` (hash of policy, instrument, signal direction, and price) is stored on the job to prevent duplicates if the same signal fires on multiple consecutive ticks before the job is processed.
+
+### Trade execution
+
+The trade worker polls `trade_jobs` every 3 seconds and processes each job in sequence:
+
+1. **Value check** — `quantity × price` is compared against `max_trade_value` on `policy_instruments`. If exceeded, the job is rejected and a Telegram alert is sent. This limit applies to both long and short trades.
+2. **Margin check** — calls `POST /margincalculator` on the Dhan API with the exact order parameters. If available balance is less than required margin, the job is rejected and a Telegram alert is sent.
+3. **Position check** — if an open position already exists for this `(policy, instrument)` in the same direction as the signal, the job is skipped (already in the trade). If the position is in the opposite direction, a closing order is placed first.
+4. **Order placement** — calls `POST /orders` with the `correlationId` set to the job's correlation ID (truncated to 30 chars per Dhan's limit). Order type (`MARKET` or `LIMIT`) and product type (`INTRADAY` for intraday-interval policies, `CNC` for daily) are set per policy instrument.
+5. **Status polling** — polls `GET /orders/{order-id}` up to 20 times (3 seconds apart) until the order reaches a terminal status: `TRADED`, `PART_TRADED`, `REJECTED`, `CANCELLED`, or `EXPIRED`.
+6. **Position recording** — on fill, writes or updates a `trade_positions` row. On failure, marks the job failed and sends a Telegram alert.
+
+`trade_jobs` status flow: `pending → checking → placing → polling → done / failed`
+
+Each instrument in a trade-mode policy carries: `quantity` (integer shares), `order_type` (`MARKET` or `LIMIT`), and `max_trade_value` (0 = no limit). Open positions are tracked in `trade_positions` keyed on `(policy_id, security_id, exchange_segment)`.
 
 ### Strategy compilation
 
