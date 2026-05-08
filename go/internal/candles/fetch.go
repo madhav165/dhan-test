@@ -11,12 +11,13 @@ import (
 )
 
 type candleResp struct {
-	Open      []float64 `json:"open"`
-	High      []float64 `json:"high"`
-	Low       []float64 `json:"low"`
-	Close     []float64 `json:"close"`
-	Volume    []float64 `json:"volume"`
-	Timestamp []float64 `json:"timestamp"`
+	Open         []float64 `json:"open"`
+	High         []float64 `json:"high"`
+	Low          []float64 `json:"low"`
+	Close        []float64 `json:"close"`
+	Volume       []float64 `json:"volume"`
+	Timestamp    []float64 `json:"timestamp"`
+	OpenInterest []float64 `json:"open_interest"`
 }
 
 func MapSegment(seg string) (dhanSeg, instrument string) {
@@ -85,6 +86,7 @@ func FetchAndStore(db *sql.DB, dhanBaseURL, clientID, accessToken, secID, seg, i
 				"exchangeSegment": dhanSeg,
 				"instrument":      instrType,
 				"expiryCode":      0,
+				"oi":              true,
 				"fromDate":        chunk[0],
 				"toDate":          chunk[1],
 			}
@@ -96,6 +98,7 @@ func FetchAndStore(db *sql.DB, dhanBaseURL, clientID, accessToken, secID, seg, i
 				"exchangeSegment": dhanSeg,
 				"instrument":      instrType,
 				"interval":        fmt.Sprintf("%d", mins),
+				"oi":              true,
 				"fromDate":        chunk[0],
 				"toDate":          chunk[1],
 			}
@@ -141,12 +144,12 @@ func upsert(db *sql.DB, secID, seg, interval string, c candleResp, update bool) 
 
 	conflict := "on conflict do nothing"
 	if update {
-		conflict = "on conflict (security_id, exchange_segment, interval, timestamp) do update set open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close, volume=excluded.volume"
+		conflict = "on conflict (security_id, exchange_segment, interval, timestamp) do update set open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close, volume=excluded.volume, oi=excluded.oi"
 	}
 
 	stmt, err := tx.Prepare(`
-		insert into candles (security_id, exchange_segment, interval, timestamp, open, high, low, close, volume)
-		values ($1, $2, $3, to_timestamp($4), $5, $6, $7, $8, $9)
+		insert into candles (security_id, exchange_segment, interval, timestamp, open, high, low, close, volume, oi)
+		values ($1, $2, $3, to_timestamp($4), $5, $6, $7, $8, $9, $10)
 		` + conflict)
 	if err != nil {
 		return err
@@ -154,9 +157,13 @@ func upsert(db *sql.DB, secID, seg, interval string, c candleResp, update bool) 
 	defer stmt.Close()
 
 	for i := range c.Close {
+		var oi int64
+		if i < len(c.OpenInterest) {
+			oi = int64(c.OpenInterest[i])
+		}
 		_, err := stmt.Exec(secID, seg, interval,
 			int64(c.Timestamp[i]),
-			c.Open[i], c.High[i], c.Low[i], c.Close[i], int64(c.Volume[i]))
+			c.Open[i], c.High[i], c.Low[i], c.Close[i], int64(c.Volume[i]), oi)
 		if err != nil {
 			return err
 		}

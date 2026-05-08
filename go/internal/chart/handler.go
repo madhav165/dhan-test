@@ -25,6 +25,7 @@ type Candle struct {
 	Low       float64 `json:"low"`
 	Close     float64 `json:"close"`
 	Volume    int64   `json:"volume"`
+	OI        int64   `json:"oi"`
 }
 
 func (h *Handler) Candles(w http.ResponseWriter, r *http.Request) {
@@ -107,7 +108,7 @@ func (h *Handler) Candles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.DB.QueryContext(r.Context(),
-		`select extract(epoch from timestamp)::bigint, open, high, low, close, volume
+		`select extract(epoch from timestamp)::bigint, open, high, low, close, volume, coalesce(oi, 0)
 		 from candles
 		 where security_id=$1 and exchange_segment=$2 and interval=$3
 		 and timestamp::date between $4::text::date and $5::text::date
@@ -123,7 +124,7 @@ func (h *Handler) Candles(w http.ResponseWriter, r *http.Request) {
 	result := []Candle{}
 	for rows.Next() {
 		var c Candle
-		if err := rows.Scan(&c.Timestamp, &c.Open, &c.High, &c.Low, &c.Close, &c.Volume); err != nil {
+		if err := rows.Scan(&c.Timestamp, &c.Open, &c.High, &c.Low, &c.Close, &c.Volume, &c.OI); err != nil {
 			http.Error(w, "scan error", http.StatusInternalServerError)
 			return
 		}

@@ -10,7 +10,7 @@
 
 	type Instrument = { security_id: string; exchange_segment: string; trading_symbol: string; custom_symbol: string }
 	type Indicator = { type: 'sma' | 'ema' | 'rsi' | 'macd' | 'bb' | 'vwap'; period: number }
-	type Candle = { timestamp: number; open: number; high: number; low: number; close: number; volume: number }
+	type Candle = { timestamp: number; open: number; high: number; low: number; close: number; volume: number; oi: number }
 
 	const first = untrack(() => data.charts[0])
 	let chartId = $state<string | null>(first?.id ?? null)
@@ -76,6 +76,7 @@
 	let chart: IChartApi
 	let candleSeries: ISeriesApi<'Candlestick'>
 	let volumeSeries: ISeriesApi<'Histogram'>
+	let oiSeries: ISeriesApi<'Histogram'>
 	let lineSeries: ISeriesApi<'Line'>[] = []
 	let rsiSeries: ISeriesApi<'Line'>[] = []
 
@@ -228,13 +229,19 @@
 			borderUpColor: '#22c55e', borderDownColor: '#ef4444',
 			wickUpColor: '#22c55e', wickDownColor: '#ef4444',
 		})
-		// on desktop always show volume; on mobile the toggle effect handles it
+		// on desktop always show volume and OI; on mobile the toggle effect handles it
 		if (!window.matchMedia('(max-width: 768px)').matches) {
 			volumeSeries = chart.addSeries(HistogramSeries, {
 				priceFormat: { type: 'volume' },
 				priceScaleId: 'vol',
 			}, 1)
 			volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.7, bottom: 0 } })
+			oiSeries = chart.addSeries(HistogramSeries, {
+				color: '#60a5fa88',
+				priceFormat: { type: 'volume' },
+				priceScaleId: 'oi',
+			}, 2)
+			oiSeries.priceScale().applyOptions({ scaleMargins: { top: 0.1, bottom: 0 } })
 		}
 
 		if (instrument) await fetchCandles()
@@ -305,6 +312,12 @@
 			color: c.close >= c.open ? '#22c55e44' : '#ef444444',
 		}))
 		volumeSeries?.setData(volData)
+
+		const oiData: HistogramData[] = candles.map(c => ({
+			time: c.timestamp as any,
+			value: c.oi,
+		}))
+		oiSeries?.setData(oiData)
 
 		const total = candles.length
 		const visible = Math.min(100, total)
@@ -415,9 +428,10 @@
 		interval = 'day'
 		indicators = []
 		candles = []
-		if (chart && candleSeries && volumeSeries) {
+		if (chart && candleSeries) {
 			chart.removeSeries(candleSeries)
-			chart.removeSeries(volumeSeries)
+			if (volumeSeries) chart.removeSeries(volumeSeries)
+			if (oiSeries) chart.removeSeries(oiSeries)
 			candleSeries = chart.addSeries(CandlestickSeries, {
 				upColor: '#22c55e', downColor: '#ef4444',
 				borderUpColor: '#22c55e', borderDownColor: '#ef4444',
@@ -429,6 +443,12 @@
 					priceScaleId: 'vol',
 				}, 1)
 				volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.7, bottom: 0 } })
+				oiSeries = chart.addSeries(HistogramSeries, {
+					color: '#60a5fa88',
+					priceFormat: { type: 'volume' },
+					priceScaleId: 'oi',
+				}, 2)
+				oiSeries.priceScale().applyOptions({ scaleMargins: { top: 0.1, bottom: 0 } })
 			}
 		}
 	}
