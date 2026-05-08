@@ -156,17 +156,23 @@ func (h *Handler) Live(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("live: connected to Dhan feed for seg=%s id=%s", dhanSeg, p.S)
+
 	// reuse buffer to avoid per-tick allocation
 	buf := make([]byte, 0, 64)
 	for {
-		_, msg, err := dhanConn.ReadMessage()
+		msgType, msg, err := dhanConn.ReadMessage()
 		if err != nil {
+			log.Printf("live: dhan read error: %v", err)
 			return
 		}
+		log.Printf("live: got msg type=%d len=%d first_byte=%d", msgType, len(msg), func() byte { if len(msg) > 0 { return msg[0] }; return 0 }())
 		ltp, ltt, vol, ok := parseQuote(msg)
 		if !ok {
+			log.Printf("live: skipped packet (type=%d len=%d)", msgType, len(msg))
 			continue
 		}
+		log.Printf("live: tick ltp=%.2f ltt=%d vol=%d", ltp, ltt, vol)
 		buf = buf[:0]
 		buf = append(buf, `{"ltp":`...)
 		buf = strconv.AppendFloat(buf, float64(ltp), 'f', 2, 32)

@@ -126,8 +126,10 @@
 		const { token } = await res.json()
 		const ws = new WebSocket(`${data.goWsUrl}/chart/live?token=${token}`)
 		liveWs = ws
+		ws.onopen = () => console.log('[live] WS open')
 		ws.onmessage = ({ data: raw }) => {
 			const tick: { ltp: number; ltt: number; vol: number } = JSON.parse(raw)
+			console.log('[live] tick', tick)
 			if (tick.ltt === 0) return
 			const ivSec = INTERVAL_SECONDS[interval]
 			const bucketTime = Math.floor(tick.ltt / ivSec) * ivSec
@@ -144,22 +146,26 @@
 			formingClose = tick.ltp
 			const deltaVol = Math.max(0, tick.vol - prevVolume)
 			prevVolume = tick.vol
-			candleSeries.update({
-				time: bucketTime as any,
-				open: formingOpen,
-				high: formingHigh,
-				low: formingLow,
-				close: formingClose,
-			})
-			volumeSeries.update({
-				time: bucketTime as any,
-				value: deltaVol,
-				color: formingClose >= formingOpen ? '#22c55e44' : '#ef444444',
-			})
-			chart.timeScale().scrollToRealTime()
+			try {
+				candleSeries.update({
+					time: bucketTime as any,
+					open: formingOpen,
+					high: formingHigh,
+					low: formingLow,
+					close: formingClose,
+				})
+				volumeSeries.update({
+					time: bucketTime as any,
+					value: deltaVol,
+					color: formingClose >= formingOpen ? '#22c55e44' : '#ef444444',
+				})
+				chart.timeScale().scrollToRealTime()
+			} catch (e) {
+				console.error('[live] chart update error', e)
+			}
 		}
-		ws.onerror = () => { error = 'Live feed error'; live = false }
-		ws.onclose = () => { if (live) { live = false } }
+		ws.onerror = (e) => { console.error('[live] WS error', e); error = 'Live feed error'; live = false }
+		ws.onclose = (e) => { console.log('[live] WS close', e.code, e.reason); if (live) { live = false } }
 	}
 
 	function stopLive() {
