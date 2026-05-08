@@ -22,6 +22,12 @@ export const actions: Actions = {
 		if (!rl_config.train_from || !rl_config.train_to) {
 			return fail(400, { error: 'Training date range is required' })
 		}
+		if (!rl_config.test_from || !rl_config.test_to) {
+			return fail(400, { error: 'Test date range is required' })
+		}
+		if (rl_config.test_from <= rl_config.train_to) {
+			return fail(400, { error: 'Test range must start after training range ends' })
+		}
 
 		const stratResult = await db.query(
 			`insert into strategies (user_id, name, strategy_type, rl_config)

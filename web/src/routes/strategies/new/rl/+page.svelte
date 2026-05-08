@@ -19,6 +19,8 @@
 	let lookback_candles = $state(20)
 	let train_from = $state('')
 	let train_to = $state('')
+	let test_from = $state('')
+	let test_to = $state('')
 	let selectedIndicators: string[] = $state(['rsi', 'sma'])
 	let constraints: RLConstraint[] = $state([])
 
@@ -54,6 +56,8 @@
 		allow_short,
 		train_from,
 		train_to,
+		test_from,
+		test_to,
 	})
 </script>
 
@@ -133,11 +137,20 @@
 	</div>
 
 	<div class="field">
-		<label>Training data range</label>
+		<label>Training data range <span class="label-note">(80% train / 20% validation split applied automatically)</span></label>
 		<div class="date-row">
 			<input type="date" bind:value={train_from} required />
 			<span>→</span>
 			<input type="date" bind:value={train_to} required />
+		</div>
+	</div>
+
+	<div class="field">
+		<label>Test data range <span class="label-note">(held-out — never seen during training)</span></label>
+		<div class="date-row">
+			<input type="date" bind:value={test_from} required />
+			<span>→</span>
+			<input type="date" bind:value={test_to} required />
 		</div>
 	</div>
 
@@ -158,6 +171,7 @@
 	.field { display: flex; flex-direction: column; gap: 8px; }
 	label { color: var(--text-muted); font-size: 0.8rem; font-weight: 500; }
 	.hint { color: var(--text-muted); font-size: 0.75rem; margin: 0; }
+	.label-note { font-size: 0.7rem; font-weight: 400; opacity: 0.7; }
 
 	input[type='text'], input[type='date'] {
 		background: var(--bg-surface);

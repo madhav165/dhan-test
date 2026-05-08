@@ -69,9 +69,23 @@
 					<span class="summary-value">{summary.training_episodes}</span>
 				</div>
 				<div class="summary-item">
-					<span class="summary-label">Final reward</span>
-					<span class="summary-value">{summary.final_reward.toFixed(4)}</span>
+					<span class="summary-label">Train reward</span>
+					<span class="summary-value">{summary.final_train_reward?.toFixed(4) ?? '—'}</span>
 				</div>
+				<div class="summary-item">
+					<span class="summary-label">Val PnL</span>
+					<span class="summary-value" class:pos={summary.val_pnl > 0} class:neg={summary.val_pnl < 0}>
+						{summary.val_pnl != null ? (summary.val_pnl * 100).toFixed(2) + '%' : '—'}
+					</span>
+				</div>
+				{#if summary.test_pnl != null}
+				<div class="summary-item">
+					<span class="summary-label">Test PnL</span>
+					<span class="summary-value" class:pos={summary.test_pnl > 0} class:neg={summary.test_pnl < 0}>
+						{(summary.test_pnl * 100).toFixed(2)}%
+					</span>
+				</div>
+				{/if}
 			</div>
 
 			<h3>Feature importance</h3>
@@ -312,6 +326,8 @@
 	.summary-item { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; }
 	.summary-label { color: var(--text-muted); display: block; font-size: 0.75rem; margin-bottom: 4px; }
 	.summary-value { font-size: 1.25rem; font-weight: 600; }
+	.summary-value.pos { color: var(--green); }
+	.summary-value.neg { color: var(--red-muted); }
 
 	.feature-list { display: flex; flex-direction: column; gap: 6px; }
 	.feature-row { align-items: center; display: flex; gap: 10px; }

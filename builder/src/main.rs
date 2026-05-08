@@ -1,6 +1,6 @@
 mod rl;
 use rl::features::{Candles, IndicatorSpec, compute_indicators, build_state_matrix, normalise};
-use rl::train::{TrainConfig, train as rl_train, weights_to_bytes};
+use rl::train::{TrainConfig, train as rl_train, weights_to_bytes, evaluate as rl_evaluate};
 use rl::distill::{feature_importance, normalise_importance, distil};
 
 use std::env;
@@ -575,6 +575,8 @@ async fn process_rl_job(
 
     let train_from: String = rl_config["train_from"].as_str().unwrap_or("").to_string();
     let train_to: String = rl_config["train_to"].as_str().unwrap_or("").to_string();
+    let test_from: Option<String> = rl_config["test_from"].as_str().map(|s| s.to_string());
+    let test_to: Option<String> = rl_config["test_to"].as_str().map(|s| s.to_string());
     let lookback = rl_config["lookback_candles"].as_u64().unwrap_or(20) as usize;
     let allow_short = rl_config["allow_short"].as_bool().unwrap_or(false);
     let reward_type = rl_config["reward"].as_str().unwrap_or("pnl").to_string();
@@ -617,30 +619,59 @@ async fn process_rl_job(
         None => return Err("No instrument found — run a backtest first to select an instrument".into()),
     };
 
-    let candle_rows = db.query(
-        "select extract(epoch from timestamp)::bigint, open::float8, high::float8,
-                low::float8, close::float8, volume
-         from candles
-         where security_id=$1 and exchange_segment=$2 and interval='day'
-         and timestamp::date between $3::text::date and $4::text::date
-         order by timestamp",
-        &[&security_id, &exchange_segment, &train_from, &train_to],
+    // Broker charges (daily = delivery)
+    let charge_row = db.query_one(
+        "select brokerage_flat::float8, brokerage_pct::float8, stt_buy_pct::float8, \
+                stt_sell_pct::float8, exchange_pct::float8, sebi_pct::float8, \
+                stamp_buy_pct::float8, gst_pct::float8 \
+         from broker_charges where trade_type = 'delivery'",
+        &[],
     ).await.map_err(|e| e.to_string())?;
-
-    if candle_rows.is_empty() {
-        return Err(format!("No daily candles found for {} {} in {} to {}", security_id, exchange_segment, train_from, train_to));
-    }
-
-    let candles = Candles {
-        opens:   candle_rows.iter().map(|r| r.get::<_, f64>(1)).collect(),
-        highs:   candle_rows.iter().map(|r| r.get::<_, f64>(2)).collect(),
-        lows:    candle_rows.iter().map(|r| r.get::<_, f64>(3)).collect(),
-        closes:  candle_rows.iter().map(|r| r.get::<_, f64>(4)).collect(),
-        volumes: candle_rows.iter().map(|r| r.get::<_, i64>(5) as f64).collect(),
+    let charges = rl::train::BrokerCharges {
+        brokerage_flat: charge_row.get(0),
+        brokerage_pct:  charge_row.get(1),
+        stt_buy_pct:    charge_row.get(2),
+        stt_sell_pct:   charge_row.get(3),
+        exchange_pct:   charge_row.get(4),
+        sebi_pct:       charge_row.get(5),
+        stamp_buy_pct:  charge_row.get(6),
+        gst_pct:        charge_row.get(7),
     };
 
-    let indicator_series = compute_indicators(&candles, &indicator_specs);
-    let (mut states, feature_names) = build_state_matrix(&candles, &indicator_series, lookback);
+    let fetch_candles = |from: &str, to: &str| {
+        let from = from.to_string();
+        let to = to.to_string();
+        let sid = security_id.clone();
+        let seg = exchange_segment.clone();
+        async move {
+            db.query(
+                "select extract(epoch from timestamp)::bigint, open::float8, high::float8,
+                        low::float8, close::float8, volume
+                 from candles
+                 where security_id=$1 and exchange_segment=$2 and interval='day'
+                 and timestamp::date between $3::text::date and $4::text::date
+                 order by timestamp",
+                &[&sid, &seg, &from, &to],
+            ).await.map_err(|e: tokio_postgres::Error| e.to_string())
+        }
+    };
+
+    let to_candles = |rows: Vec<tokio_postgres::Row>| Candles {
+        opens:   rows.iter().map(|r| r.get::<_, f64>(1)).collect(),
+        highs:   rows.iter().map(|r| r.get::<_, f64>(2)).collect(),
+        lows:    rows.iter().map(|r| r.get::<_, f64>(3)).collect(),
+        closes:  rows.iter().map(|r| r.get::<_, f64>(4)).collect(),
+        volumes: rows.iter().map(|r| r.get::<_, i64>(5) as f64).collect(),
+    };
+
+    let train_rows = fetch_candles(&train_from, &train_to).await?;
+    if train_rows.is_empty() {
+        return Err(format!("No daily candles found for {} {} in {} to {}", security_id, exchange_segment, train_from, train_to));
+    }
+    let train_candles = to_candles(train_rows);
+
+    let indicator_series = compute_indicators(&train_candles, &indicator_specs);
+    let (mut states, feature_names) = build_state_matrix(&train_candles, &indicator_series, lookback);
     normalise(&mut states);
 
     let cfg = TrainConfig {
@@ -657,11 +688,25 @@ async fn process_rl_job(
         max_trades_per_month,
     };
 
-    let result = rl_train(&states, &candles.closes, lookback, &cfg);
+    let result = rl_train(&states, &train_candles.closes, lookback, &cfg, &charges);
 
     let weights = weights_to_bytes(&result.net);
     let weights_key = format!("strategies/{}/weights.bin", strategy_id);
     upload(s3, bucket, &weights_key, weights).await?;
+
+    // Evaluate on held-out test set if provided
+    let test_pnl: Option<f64> = if let (Some(ref tf), Some(ref tt)) = (test_from, test_to) {
+        let test_rows = fetch_candles(tf, tt).await?;
+        if !test_rows.is_empty() {
+            let test_candles = to_candles(test_rows);
+            let test_ind = compute_indicators(&test_candles, &indicator_specs);
+            let (mut test_states, _) = build_state_matrix(&test_candles, &test_ind, lookback);
+            normalise(&mut test_states);
+            if test_states.nrows() > 0 {
+                Some(rl::train::evaluate(&result.net, &test_states, &test_candles.closes, lookback, allow_short, &charges))
+            } else { None }
+        } else { None }
+    } else { None };
 
     let raw_imp = feature_importance(&result.net, &states);
     let norm_imp = normalise_importance(&raw_imp);
@@ -676,7 +721,9 @@ async fn process_rl_job(
         "feature_importance": feature_importance_json,
         "approximate_rules": approx_rules,
         "training_episodes": result.episodes,
-        "final_reward": result.final_reward,
+        "final_train_reward": result.final_train_reward,
+        "val_pnl": result.val_pnl,
+        "test_pnl": test_pnl,
     });
 
     db.execute(

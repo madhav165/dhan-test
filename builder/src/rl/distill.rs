@@ -1,21 +1,26 @@
 use ndarray::Array2;
 use crate::rl::train::MLP;
 
+fn dominant_logit(net: &MLP, x: &[f64]) -> f64 {
+    let lg = net.logits(x);
+    // use the buy-logit as the signal strength (positive = bullish bias)
+    lg[1] - lg[0]
+}
+
 pub fn feature_importance(net: &MLP, states: &Array2<f64>) -> Vec<f64> {
     let n = states.nrows();
     let d = states.ncols();
     if n == 0 { return vec![0.0; d]; }
 
     let baseline: Vec<f64> = (0..n)
-        .map(|i| { let s = states.row(i).to_vec(); let (m, _) = net.forward(&s); m[0] })
+        .map(|i| { let s = states.row(i).to_vec(); dominant_logit(net, &s) })
         .collect();
 
     (0..d).map(|j| {
         let diff: f64 = (0..n).map(|i| {
             let mut s = states.row(i).to_vec();
             s[j] = 0.0;
-            let (m, _) = net.forward(&s);
-            (baseline[i] - m[0]).abs()
+            (baseline[i] - dominant_logit(net, &s)).abs()
         }).sum::<f64>() / n as f64;
         diff
     }).collect()
@@ -37,8 +42,9 @@ impl TreeNode {
         let indent = "  ".repeat(depth);
         match self {
             Self::Leaf { action_mean } => {
-                let signal = if *action_mean > 0.2 { "BUY" } else if *action_mean < -0.2 { "SELL" } else { "HOLD" };
-                format!("{}→ {} (position={:.2})\n", indent, signal, action_mean)
+                // action_mean here is the dominant logit (buy - hold); interpret as signal
+                let signal = if *action_mean > 0.5 { "BUY" } else if *action_mean < -0.5 { "SELL" } else { "HOLD" };
+                format!("{}→ {} (score={:.2})\n", indent, signal, action_mean)
             }
             Self::Split { feature, threshold, left, right } => {
                 let fname = feature_names.get(*feature).map(|s| s.as_str()).unwrap_or("?");
@@ -113,10 +119,8 @@ pub fn distil(net: &MLP, states: &Array2<f64>, feature_names: &[String], max_dep
     if n == 0 { return "No data".into(); }
 
     let state_vecs: Vec<Vec<f64>> = (0..n).map(|i| states.row(i).to_vec()).collect();
-    let actions: Vec<f64> = state_vecs.iter()
-        .map(|s| { let (m, _) = net.forward(s); m[0] })
-        .collect();
+    let scores: Vec<f64> = state_vecs.iter().map(|s| dominant_logit(net, s)).collect();
 
-    let tree = build_tree(&state_vecs, &actions, 0, max_depth);
+    let tree = build_tree(&state_vecs, &scores, 0, max_depth);
     tree.to_text(feature_names, 0)
 }
