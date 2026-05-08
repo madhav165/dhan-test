@@ -1,14 +1,21 @@
+import { GO_URL } from '$env/static/private'
 import { db } from '$lib/server/db'
 import { error, redirect } from '@sveltejs/kit'
 import type { Actions, PageServerLoad } from './$types'
 
 export const load: PageServerLoad = async ({ locals, params }) => {
 	const result = await db.query(
-		`select id, name, source_key from strategies where id = $1 and user_id = $2`,
+		`select id, name from strategies where id = $1 and user_id = $2`,
 		[params.id, locals.user!.id]
 	)
 	if (result.rows.length === 0) error(404, 'Strategy not found')
-	return { strategy: result.rows[0] }
+
+	const resp = await fetch(`${GO_URL}/chart/strategy-source?strategy_id=${params.id}`, {
+		headers: { 'X-User-ID': locals.user!.id },
+	})
+	const code = resp.ok ? await resp.text() : ''
+
+	return { strategy: { ...result.rows[0], code } }
 }
 
 export const actions: Actions = {

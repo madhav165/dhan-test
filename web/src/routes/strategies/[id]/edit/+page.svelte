@@ -4,7 +4,7 @@
 
 	let { data } = $props()
 
-	let code = $state(data.strategy.source_key ?? '')
+	let code = $state(data.strategy.code ?? '')
 	let name = $state(data.strategy.name)
 </script>
 
