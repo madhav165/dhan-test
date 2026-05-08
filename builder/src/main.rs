@@ -605,19 +605,14 @@ async fn process_rl_job(
         }
     }
 
-    let inst_row = db.query_opt(
-        "select ri.security_id, ri.exchange_segment
-         from backtest_run_instruments ri
-         join backtest_runs r on r.id = ri.run_id
-         where r.strategy_id = $1
-         limit 1",
-        &[&strategy_id],
-    ).await.map_err(|e| e.to_string())?;
-
-    let (security_id, exchange_segment) = match inst_row {
-        Some(r) => (r.get::<_, String>(0), r.get::<_, String>(1)),
-        None => return Err("No instrument found — run a backtest first to select an instrument".into()),
-    };
+    let security_id = rl_config["security_id"].as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "No instrument configured in RL config".to_string())?
+        .to_string();
+    let exchange_segment = rl_config["exchange_segment"].as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "No exchange segment configured in RL config".to_string())?
+        .to_string();
 
     // Broker charges (daily = delivery)
     let charge_row = db.query_one(

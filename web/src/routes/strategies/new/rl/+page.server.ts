@@ -19,6 +19,9 @@ export const actions: Actions = {
 			return fail(400, { error: 'Invalid RL config' })
 		}
 
+		if (!rl_config.security_id || !rl_config.exchange_segment) {
+			return fail(400, { error: 'Instrument is required' })
+		}
 		if (!rl_config.train_from || !rl_config.train_to) {
 			return fail(400, { error: 'Training date range is required' })
 		}

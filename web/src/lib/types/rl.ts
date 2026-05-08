@@ -12,6 +12,9 @@ export type RLConfig = {
 	indicators: Indicator[]
 	lookback_candles: number
 	allow_short: boolean
+	security_id: string
+	exchange_segment: string
+	trading_symbol: string
 	train_from: string  // YYYY-MM-DD
 	train_to: string    // YYYY-MM-DD
 	test_from: string   // YYYY-MM-DD — held-out period, never seen during training

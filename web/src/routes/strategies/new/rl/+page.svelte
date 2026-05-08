@@ -1,9 +1,13 @@
 <script lang="ts">
 	import { enhance } from '$app/forms'
+	import InstrumentSearch from '$lib/components/InstrumentSearch.svelte'
 	import type { RLConfig, RLConstraint, RLReward } from '$lib/types/rl'
 	import type { Indicator } from '$lib/types/rules'
 
 	let { form } = $props()
+
+	type Instrument = { security_id: string; exchange_segment: string; trading_symbol: string; custom_symbol: string }
+	let instrument = $state<Instrument | null>(null)
 
 	const indicatorNames = ['rsi', 'sma', 'ema', 'vwap', 'macd', 'bb'] as const
 
@@ -54,6 +58,9 @@
 		indicators: selectedIndicators.map(defaultIndicator),
 		lookback_candles,
 		allow_short,
+		security_id: instrument?.security_id ?? '',
+		exchange_segment: instrument?.exchange_segment ?? '',
+		trading_symbol: instrument?.trading_symbol ?? '',
 		train_from,
 		train_to,
 		test_from,
@@ -74,6 +81,19 @@
 	<div class="field">
 		<label for="name">Name</label>
 		<input id="name" name="name" type="text" placeholder="e.g. RSI momentum RL" required />
+	</div>
+
+	<div class="field">
+		<label>Instrument</label>
+		<InstrumentSearch onselect={(inst) => { instrument = inst }} inputId="rl-instrument-search" />
+		{#if instrument}
+			<div class="selected-inst">
+				<span class="symbol">{instrument.trading_symbol}</span>
+				{#if instrument.custom_symbol}<span class="iname">{instrument.custom_symbol}</span>{/if}
+				<span class="tag">{instrument.exchange_segment}</span>
+				<button type="button" class="remove" onclick={() => { instrument = null }}>×</button>
+			</div>
+		{/if}
 	</div>
 
 	<div class="field">
@@ -172,6 +192,22 @@
 	label { color: var(--text-muted); font-size: 0.8rem; font-weight: 500; }
 	.hint { color: var(--text-muted); font-size: 0.75rem; margin: 0; }
 	.label-note { font-size: 0.7rem; font-weight: 400; opacity: 0.7; }
+
+	.selected-inst {
+		align-items: center;
+		background: var(--bg-surface);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		display: flex;
+		gap: 8px;
+		margin-top: 6px;
+		padding: 6px 10px;
+	}
+	.symbol { font-size: 0.875rem; font-weight: 600; }
+	.iname { color: var(--text-muted); flex: 1; font-size: 0.8rem; }
+	.tag { background: var(--bg); border-radius: 4px; color: var(--text-muted); font-size: 0.7rem; padding: 2px 6px; }
+	.remove { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1rem; line-height: 1; margin-left: auto; padding: 0 2px; }
+	.remove:hover { color: var(--red); }
 
 	input[type='text'], input[type='date'] {
 		background: var(--bg-surface);
