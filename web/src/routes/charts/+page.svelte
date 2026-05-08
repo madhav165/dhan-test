@@ -84,11 +84,18 @@
 	let error = $state('')
 	let settingsOpen = $state(false)
 	let isMobile = $state(false)
+	let hideVolume = $state(false)
+
+	function updateMobileState() {
+		const mobile = window.matchMedia('(max-width: 768px)').matches
+		const portrait = window.matchMedia('(orientation: portrait)').matches
+		isMobile = mobile
+		hideVolume = mobile && portrait
+	}
 
 	onMount(() => {
-		const mq = window.matchMedia('(max-width: 768px)')
-		isMobile = mq.matches
-		mq.addEventListener('change', e => { isMobile = e.matches })
+		updateMobileState()
+		window.addEventListener('resize', updateMobileState)
 	})
 
 	const INTERVALS = ['1min', '5min', '15min', '25min', '60min', 'day']
@@ -220,7 +227,7 @@
 			borderUpColor: '#22c55e', borderDownColor: '#ef4444',
 			wickUpColor: '#22c55e', wickDownColor: '#ef4444',
 		})
-		if (!window.matchMedia('(max-width: 768px)').matches) {
+		if (!hideVolume) {
 			volumeSeries = chart.addSeries(HistogramSeries, {
 				priceFormat: { type: 'volume' },
 				priceScaleId: '',
@@ -232,7 +239,32 @@
 		chartReady = true
 	})
 
-	onDestroy(() => { chart?.remove() })
+	onDestroy(() => {
+		chart?.remove()
+		window.removeEventListener('resize', updateMobileState)
+	})
+
+	// Add/remove volume series when orientation changes
+	$effect(() => {
+		if (!chart || !chartReady) return
+		if (hideVolume && volumeSeries) {
+			chart.removeSeries(volumeSeries)
+			volumeSeries = undefined as any
+		} else if (!hideVolume && !volumeSeries) {
+			volumeSeries = chart.addSeries(HistogramSeries, {
+				priceFormat: { type: 'volume' },
+				priceScaleId: '',
+			}, 1)
+			volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.7, bottom: 0 } })
+			if (candles.length > 0) {
+				volumeSeries.setData(candles.map(c => ({
+					time: c.timestamp as any,
+					value: c.volume,
+					color: c.close >= c.open ? '#22c55e44' : '#ef444444',
+				})))
+			}
+		}
+	})
 
 	async function fetchCandles(from = fromDate, to = toDate) {
 		if (!instrument) return
@@ -360,7 +392,7 @@
 				borderUpColor: '#22c55e', borderDownColor: '#ef4444',
 				wickUpColor: '#22c55e', wickDownColor: '#ef4444',
 			})
-			if (!window.matchMedia('(max-width: 768px)').matches) {
+			if (!hideVolume) {
 				volumeSeries = chart.addSeries(HistogramSeries, {
 					priceFormat: { type: 'volume' },
 					priceScaleId: '',
