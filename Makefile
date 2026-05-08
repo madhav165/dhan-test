@@ -5,14 +5,14 @@ LOCAL   = $(COMPOSE) --profile local
 
 ## Show this help
 help:
-	@awk '/^## /{desc=substr($$0,4); next} /^[a-zA-Z%_-]+:/{printf "%-15s %s\n", substr($$1,1,length($$1)-1), desc; desc=""}' Makefile
+	@awk '/^## /{desc=substr($$0,4); next} /^[a-zA-Z%_-]+:/{if (desc) printf "%-15s %s\n", substr($$1,1,length($$1)-1), desc; desc=""}' Makefile
 
 ## Start Go service only (needs external DB)
 up:
 	$(COMPOSE) up --build -d
 
 ## Start full local stack (Postgres + MinIO + Builder + Go)
-up-local:
+up-local: wasm
 	$(LOCAL) up --build -d
 
 ## Stop Go service
@@ -39,7 +39,6 @@ logs-%:
 build:
 	$(LOCAL) build --no-cache
 
-## Build indicators.wasm and copy to web/static
 wasm:
 	cd rust && cargo build -p indicators-wasm --target wasm32-unknown-unknown --release
 	cp rust/target/wasm32-unknown-unknown/release/indicators_wasm.wasm web/static/indicators.wasm
