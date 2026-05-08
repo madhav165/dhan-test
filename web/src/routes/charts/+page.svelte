@@ -85,6 +85,7 @@
 	let settingsOpen = $state(false)
 	let isMobile = $state(false)
 	let hideVolume = $state(false)
+	let mobileView = $state<'candles' | 'volume'>('candles')
 
 	function updateMobileState() {
 		const mobile = window.matchMedia('(max-width: 768px)').matches
@@ -263,6 +264,26 @@
 					color: c.close >= c.open ? '#22c55e44' : '#ef444444',
 				})))
 			}
+		}
+	})
+
+	// Switch between candles-only and volume-only on mobile
+	$effect(() => {
+		if (!chart || !chartReady || !isMobile || hideVolume) return
+		if (mobileView === 'volume') {
+			// hide candles, show volume full-height
+			candleSeries?.applyOptions({ visible: false })
+			if (!volumeSeries) {
+				volumeSeries = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: '' }, 1)
+				if (candles.length > 0) volumeSeries.setData(candles.map(c => ({
+					time: c.timestamp as any, value: c.volume,
+					color: c.close >= c.open ? '#22c55e88' : '#ef444488',
+				})))
+			}
+			volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0 } })
+		} else {
+			candleSeries?.applyOptions({ visible: true })
+			volumeSeries?.priceScale().applyOptions({ scaleMargins: { top: 0.7, bottom: 0 } })
 		}
 	})
 
@@ -534,6 +555,9 @@
 			<span class="spacer"></span>
 
 			{#if isMobile}
+				<button class="view-toggle" onclick={() => mobileView = mobileView === 'candles' ? 'volume' : 'candles'} title="Toggle view">
+					{mobileView === 'candles' ? '≡' : '🕯'}
+				</button>
 				<button class="settings-btn" class:active={settingsOpen} onclick={() => settingsOpen = !settingsOpen} title="Settings">⚙</button>
 			{:else}
 				<input class="chart-name" bind:value={chartName} placeholder="Chart name" />
@@ -1020,6 +1044,17 @@
 	@keyframes pulse {
 		0%, 100% { opacity: 1; }
 		50% { opacity: 0.3; }
+	}
+
+	.view-toggle {
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		color: var(--text-muted);
+		cursor: pointer;
+		font-size: 16px;
+		padding: 4px 8px;
+		line-height: 1;
 	}
 
 	.settings-btn {
