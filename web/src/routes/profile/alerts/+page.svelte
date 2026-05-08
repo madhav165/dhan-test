@@ -6,8 +6,8 @@
 	let connected = $state(data.telegramConnected)
 	let token = $state('')
 
-	const botUrl = `https://t.me/${data.botName}`
-	const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(botUrl)}`
+	const botUrl = $derived(`https://t.me/${data.botName}`)
+	const qrUrl = $derived(`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(botUrl)}`)
 </script>
 
 <div class="page">
