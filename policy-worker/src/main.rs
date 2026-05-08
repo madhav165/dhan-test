@@ -28,6 +28,9 @@ struct Policy {
 struct Instrument {
     security_id: String,
     exchange_segment: String,
+    quantity: i32,
+    order_type: String,    // "MARKET" | "LIMIT"
+    max_trade_value: f64,  // 0 = no limit
 }
 
 #[derive(Debug, Clone)]
@@ -208,7 +211,8 @@ async fn load_active_policies(db: &tokio_postgres::Client, enc_key: &[u8]) -> Ve
 
         // load instruments for this policy
         let instr_rows = match db.query(
-            "select security_id, exchange_segment from policy_instruments where policy_id = $1",
+            "select security_id, exchange_segment, quantity, order_type, max_trade_value::float8
+             from policy_instruments where policy_id = $1",
             &[&policy_id],
         ).await {
             Ok(r) => r,
@@ -217,6 +221,9 @@ async fn load_active_policies(db: &tokio_postgres::Client, enc_key: &[u8]) -> Ve
         let instruments: Vec<Instrument> = instr_rows.iter().map(|r| Instrument {
             security_id: r.get::<_, &str>(0).to_string(),
             exchange_segment: r.get::<_, &str>(1).to_string(),
+            quantity: r.get(2),
+            order_type: r.get::<_, &str>(3).to_string(),
+            max_trade_value: r.get(4),
         }).collect();
 
         ctx.policies.push(Policy { id: policy_id, strategy_id, mode, interval, instruments });
@@ -381,6 +388,14 @@ async fn fetch_and_store(
 
 // ── signal / alert ───────────────────────────────────────────────────────────
 
+async fn send_telegram(bot_token: &str, chat_id: &str, text: &str) {
+    let url = format!("https://api.telegram.org/bot{bot_token}/sendMessage");
+    let _ = reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({"chat_id": chat_id, "text": text}))
+        .send().await;
+}
+
 async fn record_signal(
     db: &tokio_postgres::Client,
     telegram_bot_token: &str,
@@ -390,7 +405,10 @@ async fn record_signal(
     price: f64,
     telegram_chat_id: Option<&str>,
 ) {
+    // signal: 1 = long (BUY), 2 = short (SELL)
     let sig_label = if signal == 1 { "LONG" } else { "SHORT" };
+    let transaction_type = if signal == 1 { "BUY" } else { "SELL" };
+    let product_type = if policy.interval == "day" { "CNC" } else { "INTRADAY" };
 
     let _ = db.execute(
         "insert into live_signals (policy_id, security_id, triggered_at, signal, price)
@@ -398,16 +416,40 @@ async fn record_signal(
         &[&policy.id, &instrument.security_id, &sig_label, &price],
     ).await;
 
-    if let Some(chat_id) = telegram_chat_id {
+    if policy.mode == "trade" {
+        // Deterministic correlation_id — prevents duplicate jobs on retry
+        let correlation_id = format!(
+            "{}-{}-{}-{:.0}",
+            &policy.id[..8], instrument.security_id, transaction_type, price * 100.0
+        );
+        let _ = db.execute(
+            "insert into trade_jobs
+             (policy_id, security_id, exchange_segment, signal, price, quantity,
+              order_type, product_type, correlation_id)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             on conflict (correlation_id) do nothing",
+            &[
+                &policy.id, &instrument.security_id, &instrument.exchange_segment,
+                &transaction_type, &price,
+                &instrument.quantity, &instrument.order_type, &product_type,
+                &correlation_id,
+            ],
+        ).await;
+
+        if let Some(chat_id) = telegram_chat_id {
+            let text = format!(
+                "⚙️ Trade queued: {} {} {} qty={} @ {:.2}",
+                transaction_type, instrument.security_id, instrument.exchange_segment,
+                instrument.quantity, price
+            );
+            send_telegram(telegram_bot_token, chat_id, &text).await;
+        }
+    } else if let Some(chat_id) = telegram_chat_id {
         let text = format!(
             "🔔 Signal: {} {} {} @ {:.2}",
             sig_label, instrument.security_id, instrument.exchange_segment, price
         );
-        let url = format!("https://api.telegram.org/bot{telegram_bot_token}/sendMessage");
-        let _ = reqwest::Client::new()
-            .post(&url)
-            .json(&serde_json::json!({"chat_id": chat_id, "text": text}))
-            .send().await;
+        send_telegram(telegram_bot_token, chat_id, &text).await;
     }
 }
 
