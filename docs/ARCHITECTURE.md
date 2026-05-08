@@ -6,7 +6,7 @@ There are four things a user works with:
 
 **Broker connection** — You connect your Dhan account once. The platform stores your access token (encrypted) and uses it on your behalf to fetch market data and place orders. Tokens expire daily; you reconnect each session.
 
-**Strategy** — A piece of logic written in Rust that looks at a price series and emits signals: hold (0), buy (1), or sell (2). A strategy has no opinion about which instruments it runs on or what dates — it is purely the rule. You write it in the editor and the platform compiles it to WebAssembly.
+**Strategy** — A piece of logic that looks at a price/volume series and emits signals: hold (0), buy (1), or sell (2). A strategy has no opinion about which instruments it runs on or what dates — it is purely the rule. Strategies are built using the visual rule builder: you define buy and sell conditions using indicators (RSI, SMA, EMA, VWAP, MACD, Bollinger Bands) and raw inputs (price, volume) combined with AND/OR group logic. The platform generates Rust code from the rule tree and compiles it to WebAssembly.
 
 **Run** — A backtest. You pick a strategy, one or more instruments, a date range, and a candle interval. The platform fetches the historical price data, runs the strategy's logic over it, and gives you back performance metrics (trades, PnL, win rate, drawdown) along with the full signal series.
 
@@ -106,7 +106,9 @@ Each instrument in a trade-mode policy carries: `quantity` (integer shares), `or
 
 When you save a strategy, the source snippet is stored in Postgres. A `build_jobs` row is inserted. The builder wraps your snippet in a scaffold that provides the `alloc` and `run` exports expected by the runtime, adds the `indicators` crate as a dependency, and compiles with `cargo build --target wasm32-unknown-unknown`. The resulting `.wasm` is uploaded to MinIO and the strategy record is updated with its key.
 
-The indicators crate (`rust/indicators`) provides RSI, SMA, and EMA. It is compiled into every strategy WASM — there are no dynamic calls between modules.
+The indicators crate (`rust/indicators`) provides RSI, SMA, EMA, MACD, Bollinger Bands, and VWAP. It is compiled into every strategy WASM — there are no dynamic calls between modules.
+
+The rule tree (buy and sell groups) is stored as JSON in `strategies.rule_json` so the visual builder can re-hydrate it on edit. The generated Rust code is what actually gets compiled — `rule_json` is purely for UI state.
 
 ### Backtest execution
 
