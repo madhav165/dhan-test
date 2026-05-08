@@ -28,13 +28,20 @@
 
 	function focus(el: HTMLElement) { el.focus() }
 
+	let menuOpenId = $state<string | null>(null)
+
+	function toggleMenu(id: string, e: MouseEvent) {
+		e.stopPropagation()
+		menuOpenId = menuOpenId === id ? null : id
+	}
+
+	function closeMenu() { menuOpenId = null }
+
 	// sidebar inline rename
 	let editingChartId = $state<string | null>(null)
 	let editingName = $state('')
 
-	function startRename(c: typeof data.charts[0], e: MouseEvent) {
-		if (c.id !== chartId) return // only rename active chart
-		e.stopPropagation()
+	function startRename(c: typeof data.charts[0]) {
 		editingChartId = c.id
 		editingName = c.name
 	}
@@ -219,6 +226,7 @@
 	}
 </script>
 
+<svelte:window onclick={closeMenu} />
 <div class="layout">
 	<div class="sidebar">
 		<div class="sidebar-header">
@@ -237,7 +245,21 @@
 							use:focus
 						/>
 					{:else}
-						<button onclick={() => selectChart(c)} ondblclick={(e) => startRename(c, e)} class="chart-btn">{c.name}</button>
+						<div class="chart-row">
+							<button onclick={() => selectChart(c)} class="chart-btn">{c.name}</button>
+							<div class="menu-wrap">
+								<button class="dots-btn" onclick={(e) => toggleMenu(c.id, e)}>···</button>
+								{#if menuOpenId === c.id}
+									<div class="menu" role="menu">
+										<button onclick={() => { startRename(c); closeMenu() }}>Rename</button>
+										<form method="POST" action="?/delete">
+											<input type="hidden" name="id" value={c.id} />
+											<button type="submit" class="danger">Delete</button>
+										</form>
+									</div>
+								{/if}
+							</div>
+						</div>
 					{/if}
 				</li>
 			{/each}
@@ -377,6 +399,66 @@
 
 	.chart-item.active .chart-btn { color: var(--text); font-weight: 500; }
 	.chart-btn:hover { color: var(--text); }
+
+	.chart-row {
+		align-items: center;
+		display: flex;
+		width: 100%;
+	}
+
+	.chart-row .chart-btn { flex: 1; }
+
+	.menu-wrap { position: relative; }
+
+	.dots-btn {
+		background: none;
+		border: none;
+		border-radius: 4px;
+		color: var(--text-faint);
+		cursor: pointer;
+		font-size: 0.9rem;
+		letter-spacing: 1px;
+		opacity: 0;
+		padding: 4px 6px;
+	}
+
+	.chart-item:hover .dots-btn,
+	.chart-item.active .dots-btn { opacity: 1; }
+	.dots-btn:hover { background: var(--bg); color: var(--text); }
+
+	.menu {
+		background: var(--bg-surface);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		bottom: auto;
+		box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+		display: flex;
+		flex-direction: column;
+		left: 0;
+		min-width: 100px;
+		overflow: hidden;
+		position: absolute;
+		top: calc(100% + 4px);
+		z-index: 100;
+	}
+
+	.menu button, .menu form { width: 100%; }
+
+	.menu button {
+		background: none;
+		border: none;
+		color: var(--text);
+		cursor: pointer;
+		font-family: 'Inter', sans-serif;
+		font-size: 0.8rem;
+		padding: 8px 12px;
+		text-align: left;
+		width: 100%;
+	}
+
+	.menu button:hover { background: var(--bg); }
+	.menu button.danger { color: var(--red); }
+	.menu button.danger:hover { background: var(--bg); }
 
 	.chart-rename {
 		background: var(--bg-surface);
