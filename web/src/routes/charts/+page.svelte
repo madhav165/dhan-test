@@ -243,7 +243,7 @@
 
 	onDestroy(() => {
 		chart?.remove()
-		window.removeEventListener('resize', updateMobileState)
+		if (typeof window !== 'undefined') window.removeEventListener('resize', updateMobileState)
 	})
 
 
