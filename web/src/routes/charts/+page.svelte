@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy, untrack } from 'svelte'
 	import { enhance } from '$app/forms'
-	import { goto } from '$app/navigation'
+	import { goto, invalidateAll } from '$app/navigation'
 	import { createChart, ColorType, CandlestickSeries, LineSeries, HistogramSeries, type IChartApi, type ISeriesApi, type CandlestickData, type LineData, type HistogramData } from 'lightweight-charts'
 	import InstrumentSearch from '$lib/components/InstrumentSearch.svelte'
 	import { loadIndicators, runIndicator } from '$lib/wasm/indicators'
@@ -46,12 +46,25 @@
 		editingName = c.name
 	}
 
+	let renameFormEl: HTMLFormElement
+	let renameIdInput: HTMLInputElement
+	let renameNameInput: HTMLInputElement
+	let renameSecIdInput: HTMLInputElement
+	let renameSegInput: HTMLInputElement
+	let renameIntervalInput: HTMLInputElement
+	let renameIndicatorsInput: HTMLInputElement
+
 	function commitRename(c: typeof data.charts[0]) {
-		if (editingName.trim()) {
-			c.name = editingName.trim()
-			if (c.id === chartId) chartName = c.name
-		}
+		const name = editingName.trim()
 		editingChartId = null
+		if (!name || name === c.name) return
+		renameIdInput.value = c.id
+		renameNameInput.value = name
+		renameSecIdInput.value = c.security_id
+		renameSegInput.value = c.exchange_segment
+		renameIntervalInput.value = c.interval
+		renameIndicatorsInput.value = JSON.stringify(c.indicators)
+		renameFormEl.requestSubmit()
 	}
 
 	// indicator form
@@ -227,6 +240,23 @@
 </script>
 
 <svelte:window onclick={closeMenu} />
+
+<!-- hidden form for rename — submitted programmatically -->
+<form
+	bind:this={renameFormEl}
+	method="POST"
+	action="?/save"
+	style="display:none"
+	use:enhance={() => async ({ update }) => { await update(); await invalidateAll() }}
+>
+	<input bind:this={renameIdInput} name="id" />
+	<input bind:this={renameNameInput} name="name" />
+	<input bind:this={renameSecIdInput} name="security_id" />
+	<input bind:this={renameSegInput} name="exchange_segment" />
+	<input bind:this={renameIntervalInput} name="interval" />
+	<input bind:this={renameIndicatorsInput} name="indicators" />
+</form>
+
 <div class="layout">
 	<div class="sidebar">
 		<div class="sidebar-header">
@@ -252,7 +282,7 @@
 								{#if menuOpenId === c.id}
 									<div class="menu" role="menu">
 										<button onclick={() => { startRename(c); closeMenu() }}>Rename</button>
-										<form method="POST" action="?/delete">
+										<form method="POST" action="?/delete" use:enhance={() => async ({ update }) => { await update(); await invalidateAll() }}>
 											<input type="hidden" name="id" value={c.id} />
 											<button type="submit" class="danger">Delete</button>
 										</form>
@@ -286,6 +316,7 @@
 				return async ({ result, update }) => {
 					if (result.type === 'success' && result.data?.id) chartId = result.data.id as string
 					await update()
+					await invalidateAll()
 				}
 			}}>
 				<input type="hidden" name="name" value={chartName} />
