@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { enhance } from '$app/forms'
+	import { untrack } from 'svelte'
 
 	let { data, form } = $props()
 
-	let connected = $state(data.telegramConnected)
+	let connected = $state(untrack(() => data.telegramConnected))
 	let token = $state('')
 
 	const botUrl = $derived(`https://t.me/${data.botName}`)
