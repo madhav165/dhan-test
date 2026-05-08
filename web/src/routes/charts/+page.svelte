@@ -309,26 +309,6 @@
 			<span class="spacer"></span>
 
 			<input class="chart-name" bind:value={chartName} placeholder="Chart name" />
-
-			<form method="POST" action="?/save" use:enhance={({ formData }) => {
-				formData.set('indicators', JSON.stringify(indicators))
-				if (chartId) formData.set('id', chartId)
-				return async ({ result, update }) => {
-					if (result.type === 'success' && result.data?.id) chartId = result.data.id as string
-					await update()
-					await invalidateAll()
-				}
-			}}>
-				<input type="hidden" name="name" value={chartName} />
-				<input type="hidden" name="security_id" value={instrument?.security_id ?? ''} />
-				<input type="hidden" name="exchange_segment" value={instrument?.exchange_segment ?? ''} />
-				<input type="hidden" name="interval" value={interval} />
-				<button type="submit" class="btn-secondary" disabled={!instrument}>Save</button>
-			</form>
-
-			{#if instrument}
-				<button onclick={designStrategy} class="btn-primary">Design strategy</button>
-			{/if}
 		</div>
 
 		{#if error}
@@ -364,6 +344,28 @@
 				</li>
 			{/each}
 		</ul>
+
+		<div class="panel-actions">
+			<form method="POST" action="?/save" use:enhance={({ formData }) => {
+				formData.set('indicators', JSON.stringify(indicators))
+				if (chartId) formData.set('id', chartId)
+				return async ({ result, update }) => {
+					if (result.type === 'success' && result.data?.id) chartId = result.data.id as string
+					await update()
+					await invalidateAll()
+				}
+			}}>
+				<input type="hidden" name="name" value={chartName} />
+				<input type="hidden" name="security_id" value={instrument?.security_id ?? ''} />
+				<input type="hidden" name="exchange_segment" value={instrument?.exchange_segment ?? ''} />
+				<input type="hidden" name="interval" value={interval} />
+				<button type="submit" class="btn-primary" disabled={!instrument}>Save chart</button>
+			</form>
+
+			{#if instrument}
+				<button onclick={designStrategy} class="btn-primary">Design strategy</button>
+			{/if}
+		</div>
 	</div>
 </div>
 
@@ -587,6 +589,7 @@
 		overflow-y: auto;
 		padding: 16px 12px;
 		width: 180px;
+		justify-content: flex-start;
 	}
 
 	.add-indicator {
@@ -644,6 +647,16 @@
 	}
 
 	.remove-btn:hover { color: var(--red); }
+
+	.panel-actions {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		margin-top: auto;
+		padding-top: 12px;
+	}
+
+	.panel-actions form, .panel-actions .btn-primary { width: 100%; }
 
 	.btn-primary {
 		background: var(--accent);
