@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte'
+	import { onMount, onDestroy, untrack } from 'svelte'
 	import { enhance } from '$app/forms'
 	import { goto } from '$app/navigation'
 	import { createChart, ColorType, CandlestickSeries, LineSeries, type IChartApi, type ISeriesApi, type CandlestickData, type LineData } from 'lightweight-charts'
@@ -12,8 +12,7 @@
 	type Indicator = { type: 'sma' | 'ema' | 'rsi'; period: number }
 	type Candle = { timestamp: number; open: number; high: number; low: number; close: number; volume: number }
 
-	// active chart state
-	const first = data.charts[0]
+	const first = untrack(() => data.charts[0])
 	let chartId = $state<string | null>(first?.id ?? null)
 	let chartName = $state(first?.name ?? 'New chart')
 	let instrument = $state<Instrument | null>(
