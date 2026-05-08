@@ -85,6 +85,23 @@
 
 	const INTERVALS = ['1min', '5min', '15min', '25min', '60min', 'day']
 
+	function defaultDates(iv: string): { from: string; to: string } {
+		const days = { '1min': 7, '5min': 14, '15min': 30, '25min': 30, '60min': 30, 'day': 365 }[iv] ?? 30
+		const to = new Date().toISOString().slice(0, 10)
+		const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+		return { from, to }
+	}
+
+	let { from: initFrom, to: initTo } = defaultDates(interval)
+	let fromDate = $state(initFrom)
+	let toDate = $state(initTo)
+
+	// scrollbar state: 0 = leftmost, 1 = rightmost
+	let scrollPos = $state(0)
+	let scrollMax = $state(0)
+	let scrollThumb = $state(100)
+	let suppressScroll = false
+
 	onMount(async () => {
 		chart = createChart(chartContainer, {
 			layout: { background: { type: ColorType.Solid, color: '#0f0f0f' }, textColor: '#aaa' },
@@ -92,6 +109,7 @@
 			crosshair: { mode: 1 },
 			width: chartContainer.clientWidth,
 			height: chartContainer.clientHeight,
+			timeScale: { fixLeftEdge: true, fixRightEdge: true },
 		})
 		candleSeries = chart.addSeries(CandlestickSeries, {
 			upColor: '#22c55e', downColor: '#ef4444',
@@ -110,13 +128,10 @@
 
 	onDestroy(() => { chart?.remove() })
 
-	async function fetchCandles() {
+	async function fetchCandles(from = fromDate, to = toDate) {
 		if (!instrument) return
 		loading = true
 		error = ''
-
-		const to = new Date().toISOString().slice(0, 10)
-		const from = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
 		try {
 			const res = await fetch(
@@ -147,7 +162,35 @@
 		}))
 		volumeSeries.setData(volData)
 
-		chart.timeScale().fitContent()
+		const total = candles.length
+		const visible = Math.min(100, total)
+		chart.timeScale().setVisibleLogicalRange({ from: total - visible, to: total - 1 })
+
+		chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRangeChange)
+		chart.timeScale().subscribeVisibleLogicalRangeChange(onRangeChange)
+	}
+
+	function onRangeChange(range: { from: number; to: number } | null) {
+		if (!range || suppressScroll) return
+		const total = candles.length
+		const visibleBars = range.to - range.from
+		const maxFrom = total - 1 - visibleBars
+		scrollMax = Math.max(0, Math.round(maxFrom))
+		scrollThumb = total > 0 ? Math.round((visibleBars / total) * 100) : 100
+		suppressScroll = true
+		scrollPos = Math.max(0, Math.min(scrollMax, Math.round(range.from)))
+		suppressScroll = false
+	}
+
+	function onScrollbarInput(e: Event) {
+		if (suppressScroll) return
+		const val = Number((e.target as HTMLInputElement).value)
+		const range = chart.timeScale().getVisibleLogicalRange()
+		if (!range) return
+		const visibleBars = range.to - range.from
+		suppressScroll = true
+		chart.timeScale().setVisibleLogicalRange({ from: val, to: val + visibleBars })
+		suppressScroll = false
 	}
 
 	async function renderIndicators() {
@@ -207,8 +250,8 @@
 
 	function selectInstrument(inst: Instrument) {
 		instrument = inst
-		if (!chartName || chartName === 'New chart') chartName = `${inst.trading_symbol} · ${interval}`
-		fetchCandles()
+		chartName = `${inst.trading_symbol} · ${interval}`
+		fetchCandles(fromDate, toDate)
 	}
 
 	function addIndicator() {
@@ -222,10 +265,20 @@
 		renderIndicators()
 	}
 
-	let chartReady = false
+	let chartReady = $state(false)
+
 	$effect(() => {
-		interval // track interval
-		if (chartReady && instrument) fetchCandles()
+		if (!chartReady) return
+		const iv = interval
+		const inst = instrument
+		untrack(() => {
+			const dates = defaultDates(iv)
+			fromDate = dates.from
+			toDate = dates.to
+			if (!inst) return
+			chartName = `${inst.trading_symbol} · ${iv}`
+			fetchCandles(dates.from, dates.to)
+		})
 	})
 
 	function designStrategy() {
@@ -298,7 +351,7 @@
 
 	<div class="main">
 		<div class="toolbar">
-			<InstrumentSearch onselect={selectInstrument} inputId="chart-instrument" placeholder={instrument?.trading_symbol ?? 'Search instrument…'} />
+			<InstrumentSearch onselect={selectInstrument} inputId="chart-instrument" />
 
 			<select bind:value={interval} class="interval-select">
 				{#each INTERVALS as iv}
@@ -306,9 +359,29 @@
 				{/each}
 			</select>
 
+			<input type="date" class="date-input" bind:value={fromDate} max={toDate} onchange={() => instrument && fetchCandles()} />
+			<span class="date-sep">→</span>
+			<input type="date" class="date-input" bind:value={toDate} min={fromDate} onchange={() => instrument && fetchCandles()} />
+
 			<span class="spacer"></span>
 
 			<input class="chart-name" bind:value={chartName} placeholder="Chart name" />
+
+			<form method="POST" action="?/save" use:enhance={({ formData }) => {
+				formData.set('indicators', JSON.stringify(indicators))
+				if (chartId) formData.set('id', chartId)
+				return async ({ result, update }) => {
+					if (result.type === 'success' && result.data?.id) chartId = result.data.id as string
+					await update()
+					await invalidateAll()
+				}
+			}}>
+				<input type="hidden" name="name" value={chartName} />
+				<input type="hidden" name="security_id" value={instrument?.security_id ?? ''} />
+				<input type="hidden" name="exchange_segment" value={instrument?.exchange_segment ?? ''} />
+				<input type="hidden" name="interval" value={interval} />
+				<button type="submit" class="btn-primary" disabled={!instrument}>Save chart</button>
+			</form>
 		</div>
 
 		{#if error}
@@ -321,6 +394,20 @@
 				<div class="overlay">Loading…</div>
 			{/if}
 		</div>
+
+		{#if candles.length > 0}
+			<div class="scrollbar-wrap">
+				<input
+					type="range"
+					class="scrollbar"
+					min="0"
+					max={scrollMax}
+					bind:value={scrollPos}
+					oninput={onScrollbarInput}
+					style="--thumb-pct: {scrollThumb}%"
+				/>
+			</div>
+		{/if}
 	</div>
 
 	<div class="panel">
@@ -345,27 +432,11 @@
 			{/each}
 		</ul>
 
-		<div class="panel-actions">
-			<form method="POST" action="?/save" use:enhance={({ formData }) => {
-				formData.set('indicators', JSON.stringify(indicators))
-				if (chartId) formData.set('id', chartId)
-				return async ({ result, update }) => {
-					if (result.type === 'success' && result.data?.id) chartId = result.data.id as string
-					await update()
-					await invalidateAll()
-				}
-			}}>
-				<input type="hidden" name="name" value={chartName} />
-				<input type="hidden" name="security_id" value={instrument?.security_id ?? ''} />
-				<input type="hidden" name="exchange_segment" value={instrument?.exchange_segment ?? ''} />
-				<input type="hidden" name="interval" value={interval} />
-				<button type="submit" class="btn-primary" disabled={!instrument}>Save chart</button>
-			</form>
-
-			{#if instrument}
+		{#if instrument}
+			<div class="panel-actions">
 				<button onclick={designStrategy} class="btn-primary">Design strategy</button>
-			{/if}
-		</div>
+			</div>
+		{/if}
 	</div>
 </div>
 
@@ -550,6 +621,54 @@
 		outline: none;
 		padding: 5px 8px;
 	}
+
+	.date-input {
+		background: var(--bg-surface);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		color: var(--text);
+		font-family: 'Inter', sans-serif;
+		font-size: 0.75rem;
+		outline: none;
+		padding: 5px 6px;
+		width: 160px;
+	}
+
+	.date-input:focus { border-color: var(--accent); }
+
+	.date-sep {
+		color: var(--text-faint);
+		font-size: 0.75rem;
+	}
+
+	.scrollbar-wrap {
+		background: var(--bg-surface);
+		border-top: 1px solid var(--border);
+		padding: 4px 8px;
+	}
+
+	.scrollbar {
+		-webkit-appearance: none;
+		appearance: none;
+		background: var(--border);
+		border-radius: 2px;
+		cursor: pointer;
+		height: 6px;
+		outline: none;
+		width: 100%;
+	}
+
+	.scrollbar::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		background: var(--text-muted);
+		border-radius: 2px;
+		cursor: grab;
+		height: 6px;
+		width: var(--thumb-pct, 20%);
+	}
+
+	.scrollbar::-webkit-slider-thumb:active { cursor: grabbing; }
 
 	.chart-wrap {
 		flex: 1;
