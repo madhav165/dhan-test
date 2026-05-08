@@ -1,7 +1,7 @@
 COMPOSE = docker compose
 LOCAL   = $(COMPOSE) --profile local
 
-.PHONY: help up up-local down down-local down-clean logs build web go
+.PHONY: help up up-local down down-local down-clean logs build web
 
 ## Show this help
 help:
@@ -43,6 +43,3 @@ build:
 web:
 	cd web && npm run dev
 
-## Run Go server locally (without Docker)
-go:
-	cd go && go run ./cmd/server

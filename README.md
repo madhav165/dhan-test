@@ -65,7 +65,6 @@ cd web && npm install && cd ..
 | `make logs-go` | Stream logs from a specific service (`logs-builder`, etc.) |
 | `make build` | Rebuild all images without cache |
 | `make web` | Run SvelteKit dev server |
-| `make go` | Run Go server locally without Docker |
 
 ## Services
 
