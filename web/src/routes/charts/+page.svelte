@@ -251,7 +251,6 @@
 	$effect(() => {
 		if (!chart || !chartReady || !isMobile) return
 		if (mobileView === 'volume') {
-			// hide candles, show volume full-height
 			candleSeries?.applyOptions({ visible: false })
 			if (!volumeSeries) {
 				volumeSeries = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: '' }, 1)
@@ -260,10 +259,14 @@
 					color: c.close >= c.open ? '#22c55e88' : '#ef444488',
 				})))
 			}
+			volumeSeries.applyOptions({ visible: true })
 			volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0 } })
 		} else {
 			candleSeries?.applyOptions({ visible: true })
-			volumeSeries?.priceScale().applyOptions({ scaleMargins: { top: 0.7, bottom: 0 } })
+			if (volumeSeries) {
+				chart.removeSeries(volumeSeries)
+				volumeSeries = undefined as any
+			}
 		}
 	})
 
