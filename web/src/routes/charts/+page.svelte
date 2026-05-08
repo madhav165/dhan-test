@@ -4,12 +4,12 @@
 	import { goto, invalidateAll } from '$app/navigation'
 	import { createChart, ColorType, CandlestickSeries, LineSeries, HistogramSeries, type IChartApi, type ISeriesApi, type CandlestickData, type LineData, type HistogramData } from 'lightweight-charts'
 	import InstrumentSearch from '$lib/components/InstrumentSearch.svelte'
-	import { loadIndicators, runIndicator } from '$lib/wasm/indicators'
+	import { loadIndicators, runIndicator, runMacd, runBB, runVwap } from '$lib/wasm/indicators'
 
 	let { data } = $props()
 
 	type Instrument = { security_id: string; exchange_segment: string; trading_symbol: string; custom_symbol: string }
-	type Indicator = { type: 'sma' | 'ema' | 'rsi'; period: number }
+	type Indicator = { type: 'sma' | 'ema' | 'rsi' | 'macd' | 'bb' | 'vwap'; period: number }
 	type Candle = { timestamp: number; open: number; high: number; low: number; close: number; volume: number }
 
 	const first = untrack(() => data.charts[0])
@@ -68,7 +68,7 @@
 	}
 
 	// indicator form
-	let newIndicatorType = $state<'sma' | 'ema' | 'rsi'>('sma')
+	let newIndicatorType = $state<'sma' | 'ema' | 'rsi' | 'macd' | 'bb' | 'vwap'>('sma')
 	let newIndicatorPeriod = $state(14)
 
 	// chart DOM
@@ -338,7 +338,6 @@
 	}
 
 	async function renderIndicators() {
-		// remove existing overlays
 		lineSeries.forEach(s => chart.removeSeries(s))
 		rsiSeries.forEach(s => chart.removeSeries(s))
 		lineSeries = []
@@ -353,21 +352,47 @@
 		const colors = ['#f59e0b', '#818cf8', '#34d399', '#f472b6', '#60a5fa']
 		let colorIdx = 0
 
+		function toLineData(values: number[]): LineData[] {
+			return values.map((v, i) => ({ time: times[i] as any, value: v })).filter(p => !isNaN(p.value))
+		}
+
 		for (const ind of indicators) {
-			const fn = ind.type === 'sma' ? wasm.sma_run : ind.type === 'ema' ? wasm.ema_run : wasm.rsi_run
-			const values = runIndicator(wasm, fn, closes, ind.period)
-
-			const lineData: LineData[] = values
-				.map((v, i) => ({ time: times[i] as any, value: v }))
-				.filter(p => !isNaN(p.value))
-
-			if (ind.type === 'rsi') {
-				const s = chart.addSeries(LineSeries, { color: colors[colorIdx++ % colors.length], lineWidth: 1, priceScaleId: 'rsi' })
-				s.setData(lineData)
-				rsiSeries.push(s)
-			} else {
+			if (ind.type === 'sma' || ind.type === 'ema') {
+				const fn = ind.type === 'sma' ? wasm.sma_run : wasm.ema_run
 				const s = chart.addSeries(LineSeries, { color: colors[colorIdx++ % colors.length], lineWidth: 1 })
-				s.setData(lineData)
+				s.setData(toLineData(runIndicator(wasm, fn, closes, ind.period)))
+				lineSeries.push(s)
+
+			} else if (ind.type === 'rsi') {
+				const s = chart.addSeries(LineSeries, { color: colors[colorIdx++ % colors.length], lineWidth: 1, priceScaleId: 'rsi' })
+				s.setData(toLineData(runIndicator(wasm, wasm.rsi_run, closes, ind.period)))
+				rsiSeries.push(s)
+
+			} else if (ind.type === 'macd') {
+				const [macdLine, signalLine, hist] = runMacd(wasm, closes)
+				// histogram on its own pane
+				const histSeries = chart.addSeries(LineSeries, { color: '#94a3b8', lineWidth: 1, priceScaleId: 'macd' })
+				histSeries.setData(toLineData(hist))
+				const macdS = chart.addSeries(LineSeries, { color: colors[colorIdx++ % colors.length], lineWidth: 1, priceScaleId: 'macd' })
+				macdS.setData(toLineData(macdLine))
+				const sigS = chart.addSeries(LineSeries, { color: colors[colorIdx++ % colors.length], lineWidth: 1, priceScaleId: 'macd' })
+				sigS.setData(toLineData(signalLine))
+				rsiSeries.push(histSeries, macdS, sigS)
+
+			} else if (ind.type === 'bb') {
+				const [upper, middle, lower] = runBB(wasm, closes, ind.period)
+				const c = colors[colorIdx++ % colors.length]
+				for (const vals of [upper, middle, lower]) {
+					const s = chart.addSeries(LineSeries, { color: c, lineWidth: 1 })
+					s.setData(toLineData(vals))
+					lineSeries.push(s)
+				}
+
+			} else if (ind.type === 'vwap') {
+				const typical = candles.map(c => (c.high + c.low + c.close) / 3)
+				const volume = candles.map(c => c.volume)
+				const s = chart.addSeries(LineSeries, { color: colors[colorIdx++ % colors.length], lineWidth: 1 })
+				s.setData(toLineData(runVwap(wasm, typical, volume)))
 				lineSeries.push(s)
 			}
 		}
@@ -612,8 +637,13 @@
 				<option value="sma">SMA</option>
 				<option value="ema">EMA</option>
 				<option value="rsi">RSI</option>
+				<option value="macd">MACD</option>
+				<option value="bb">BB</option>
+				<option value="vwap">VWAP</option>
 			</select>
-			<input type="number" bind:value={newIndicatorPeriod} min="1" max="200" class="period-input" />
+			{#if newIndicatorType !== 'macd' && newIndicatorType !== 'vwap'}
+				<input type="number" bind:value={newIndicatorPeriod} min="1" max="200" class="period-input" />
+			{/if}
 			<button onclick={addIndicator} class="btn-add">Add</button>
 		</div>
 

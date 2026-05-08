@@ -1,6 +1,9 @@
 use indicators::sma::sma;
 use indicators::ema::ema;
 use indicators::rsi::rsi;
+use indicators::macd::macd;
+use indicators::bb::bb;
+use indicators::vwap::vwap;
 use std::alloc::{alloc, dealloc, Layout};
 
 #[unsafe(no_mangle)]
@@ -31,6 +34,44 @@ pub extern "C" fn ema_run(ptr: *const f64, len: u32, period: u32) -> *mut f64 {
 pub extern "C" fn rsi_run(ptr: *const f64, len: u32, period: u32) -> *mut f64 {
     let prices = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
     to_output(rsi(prices, period as usize))
+}
+
+/// Returns interleaved [macd, signal, histogram] × n (stride 3, total len = 3*n).
+#[unsafe(no_mangle)]
+pub extern "C" fn macd_run(ptr: *const f64, len: u32, fast: u32, slow: u32, signal: u32) -> *mut f64 {
+    let prices = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+    let (m, s, h) = macd(prices, fast as usize, slow as usize, signal as usize);
+    let n = len as usize;
+    let mut out = Vec::with_capacity(n * 3);
+    for i in 0..n {
+        out.push(m[i]);
+        out.push(s[i]);
+        out.push(h[i]);
+    }
+    to_output(out)
+}
+
+/// Returns interleaved [upper, middle, lower] × n (stride 3, total len = 3*n).
+#[unsafe(no_mangle)]
+pub extern "C" fn bb_run(ptr: *const f64, len: u32, period: u32) -> *mut f64 {
+    let prices = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+    let (u, m, l) = bb(prices, period as usize);
+    let n = len as usize;
+    let mut out = Vec::with_capacity(n * 3);
+    for i in 0..n {
+        out.push(u[i]);
+        out.push(m[i]);
+        out.push(l[i]);
+    }
+    to_output(out)
+}
+
+/// price_ptr = typical price array, vol_ptr = volume array, both length len.
+#[unsafe(no_mangle)]
+pub extern "C" fn vwap_run(price_ptr: *const f64, vol_ptr: *const f64, len: u32) -> *mut f64 {
+    let typical = unsafe { std::slice::from_raw_parts(price_ptr, len as usize) };
+    let volume = unsafe { std::slice::from_raw_parts(vol_ptr, len as usize) };
+    to_output(vwap(typical, volume))
 }
 
 fn to_output(mut v: Vec<f64>) -> *mut f64 {
