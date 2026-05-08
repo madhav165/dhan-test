@@ -49,7 +49,8 @@ func IntervalMinutes(interval string) int {
 	}
 }
 
-func FetchAndStore(db *sql.DB, dhanBaseURL, clientID, accessToken, secID, seg, interval, fromDate, toDate string) error {
+func FetchAndStore(db *sql.DB, dhanBaseURL, clientID, accessToken, secID, seg, interval, fromDate, toDate string, updateOnConflict ...bool) error {
+	doUpdate := len(updateOnConflict) > 0 && updateOnConflict[0]
 	dhanSeg, instrType := MapSegment(seg)
 	mins := IntervalMinutes(interval)
 
@@ -123,7 +124,7 @@ func FetchAndStore(db *sql.DB, dhanBaseURL, clientID, accessToken, secID, seg, i
 			return fmt.Errorf("parse candles: %w", err)
 		}
 
-		if err := upsert(db, secID, seg, interval, cr); err != nil {
+		if err := upsert(db, secID, seg, interval, cr, doUpdate); err != nil {
 			return err
 		}
 	}
@@ -131,17 +132,22 @@ func FetchAndStore(db *sql.DB, dhanBaseURL, clientID, accessToken, secID, seg, i
 	return nil
 }
 
-func upsert(db *sql.DB, secID, seg, interval string, c candleResp) error {
+func upsert(db *sql.DB, secID, seg, interval string, c candleResp, update bool) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
+	conflict := "on conflict do nothing"
+	if update {
+		conflict = "on conflict (security_id, exchange_segment, interval, timestamp) do update set open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close, volume=excluded.volume"
+	}
+
 	stmt, err := tx.Prepare(`
 		insert into candles (security_id, exchange_segment, interval, timestamp, open, high, low, close, volume)
 		values ($1, $2, $3, to_timestamp($4), $5, $6, $7, $8, $9)
-		on conflict do nothing`)
+		` + conflict)
 	if err != nil {
 		return err
 	}
