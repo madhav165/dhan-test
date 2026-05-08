@@ -228,7 +228,8 @@
 			borderUpColor: '#22c55e', borderDownColor: '#ef4444',
 			wickUpColor: '#22c55e', wickDownColor: '#ef4444',
 		})
-		if (!hideVolume) {
+		// on desktop always show volume; on mobile the toggle effect handles it
+		if (!window.matchMedia('(max-width: 768px)').matches) {
 			volumeSeries = chart.addSeries(HistogramSeries, {
 				priceFormat: { type: 'volume' },
 				priceScaleId: '',
@@ -245,31 +246,10 @@
 		window.removeEventListener('resize', updateMobileState)
 	})
 
-	// Add/remove volume series when orientation changes
-	$effect(() => {
-		if (!chart || !chartReady) return
-		if (hideVolume && volumeSeries) {
-			chart.removeSeries(volumeSeries)
-			volumeSeries = undefined as any
-		} else if (!hideVolume && !volumeSeries) {
-			volumeSeries = chart.addSeries(HistogramSeries, {
-				priceFormat: { type: 'volume' },
-				priceScaleId: '',
-			}, 1)
-			volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.7, bottom: 0 } })
-			if (candles.length > 0) {
-				volumeSeries.setData(candles.map(c => ({
-					time: c.timestamp as any,
-					value: c.volume,
-					color: c.close >= c.open ? '#22c55e44' : '#ef444444',
-				})))
-			}
-		}
-	})
 
 	// Switch between candles-only and volume-only on mobile
 	$effect(() => {
-		if (!chart || !chartReady || !isMobile || hideVolume) return
+		if (!chart || !chartReady || !isMobile) return
 		if (mobileView === 'volume') {
 			// hide candles, show volume full-height
 			candleSeries?.applyOptions({ visible: false })
@@ -413,7 +393,7 @@
 				borderUpColor: '#22c55e', borderDownColor: '#ef4444',
 				wickUpColor: '#22c55e', wickDownColor: '#ef4444',
 			})
-			if (!hideVolume) {
+			if (!window.matchMedia('(max-width: 768px)').matches) {
 				volumeSeries = chart.addSeries(HistogramSeries, {
 					priceFormat: { type: 'volume' },
 					priceScaleId: '',
