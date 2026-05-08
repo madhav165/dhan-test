@@ -1,0 +1,24 @@
+[package]
+name = "policy-worker"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "policy-worker"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-postgres = { version = "0.7", features = ["with-uuid-1"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
+wasmtime = { version = "28", default-features = false, features = ["cranelift", "runtime"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+aes-gcm = "0.10"
+hex = "0.4"
+base64 = "0.22"
+bytes = "1"

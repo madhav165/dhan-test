@@ -3,7 +3,9 @@ package broker
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/madhav165/dhan-test/go/internal/crypto"
 )
@@ -56,4 +58,20 @@ func (h *Handler) StoreToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+
+	// Notify policy worker — non-fatal if it's not running
+	go notifyPolicyWorker(req.UserID)
+}
+
+func notifyPolicyWorker(userID string) {
+	port := os.Getenv("POLICY_WORKER_PORT")
+	if port == "" {
+		port = "8082"
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%s/internal/user-connected?user_id=%s", port, userID)
+	resp, err := http.Post(url, "", nil)
+	if err != nil || resp == nil {
+		return
+	}
+	resp.Body.Close()
 }
