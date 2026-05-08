@@ -22,7 +22,9 @@ Each timestep the agent observes:
 
 ## Action Space
 
-Continuous position size in [-1, 1]: negative = short, positive = long, 0 = flat. Mapped to buy/sell/hold signal for the existing pipeline by thresholding (> 0.2 → buy, < -0.2 → sell, else hold).
+Configurable via `allow_short` in `rl_config`:
+- **Long-only** (`allow_short: false`): continuous position in [0, 1]. Thresholded to buy (> 0.2) or hold (≤ 0.2).
+- **Long/short** (`allow_short: true`): continuous position in [-1, 1]. Thresholded to buy (> 0.2), sell/short (< -0.2), or hold.
 
 ## Reward & Constraints
 
@@ -100,6 +102,7 @@ type RLConfig = {
   >
   indicators: Indicator[]        // same Indicator type as rule builder
   lookback_candles: number       // OHLCV window length, default 20
+  allow_short: boolean           // whether agent can take short positions
   train_from: string             // ISO date
   train_to: string               // ISO date
 }
@@ -138,4 +141,4 @@ Two cards: "Define rules" and "Learn strategy". Clicking either routes to the re
 - GPU training
 - Multiple reward objectives simultaneously
 - Online learning (retraining on live data)
-- Short selling (action space maps to long-only for now: position in [0, 1])
+- Online learning (retraining on live data)
