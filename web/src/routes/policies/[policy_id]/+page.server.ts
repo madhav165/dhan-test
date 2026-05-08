@@ -1,5 +1,5 @@
 import { db } from '$lib/server/db'
-import { error, fail } from '@sveltejs/kit'
+import { error, fail, redirect } from '@sveltejs/kit'
 import type { Actions, PageServerLoad } from './$types'
 
 export const load: PageServerLoad = async ({ locals, params }) => {
@@ -39,5 +39,14 @@ export const actions: Actions = {
 		const next = result.rows[0].status === 'active' ? 'paused' : 'active'
 		await db.query(`update policies set status = $1 where id = $2`, [next, params.policy_id])
 		return { status: next }
+	},
+
+	delete: async ({ locals, params }) => {
+		await db.query(
+			`delete from policies where id = $1
+			 and strategy_id in (select id from strategies where user_id = $2)`,
+			[params.policy_id, locals.user!.id]
+		)
+		redirect(303, '/policies')
 	},
 }

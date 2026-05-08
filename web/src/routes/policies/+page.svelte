@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { enhance } from '$app/forms'
 	import { goto } from '$app/navigation'
 
 	let { data } = $props()
@@ -36,6 +37,17 @@
 					</div>
 					<span class="badge {policy.status}">{policy.status}</span>
 				</a>
+				<form method="POST" action="?/toggle" use:enhance>
+					<input type="hidden" name="id" value={policy.id} />
+					<input type="hidden" name="status" value={policy.status} />
+					<button type="submit" class="icon-btn" title={policy.status === 'active' ? 'Pause' : 'Activate'}>
+						{policy.status === 'active' ? '⏸' : '▶'}
+					</button>
+				</form>
+				<form method="POST" action="?/delete" use:enhance onsubmit={(e) => { if (!confirm('Delete this policy?')) e.preventDefault() }}>
+					<input type="hidden" name="id" value={policy.id} />
+					<button type="submit" class="del-btn">✕</button>
+				</form>
 			</li>
 		{/each}
 	</ul>
@@ -75,6 +87,9 @@
 		padding: 0;
 	}
 
+	li { align-items: stretch; display: flex; gap: 6px; }
+	li .row { flex: 1; }
+
 	.row {
 		align-items: center;
 		background: var(--bg-surface);
@@ -106,6 +121,19 @@
 
 	.badge.active { background: var(--green); color: #000; }
 	.badge.paused { background: var(--bg); color: var(--text-muted); }
+
+	.icon-btn, .del-btn {
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		color: var(--text-muted);
+		cursor: pointer;
+		font-size: 0.75rem;
+		padding: 0 10px;
+	}
+
+	.icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+	.del-btn:hover { border-color: var(--red-muted); color: var(--red-muted); }
 
 	.btn-primary {
 		background: var(--accent);

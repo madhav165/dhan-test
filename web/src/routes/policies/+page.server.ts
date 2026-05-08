@@ -1,5 +1,6 @@
 import { db } from '$lib/server/db'
-import type { PageServerLoad } from './$types'
+import { redirect } from '@sveltejs/kit'
+import type { Actions, PageServerLoad } from './$types'
 
 export const load: PageServerLoad = async ({ locals, url }) => {
 	const strategyId = url.searchParams.get('strategy_id')
@@ -28,4 +29,28 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		strategies: strategiesResult.rows,
 		selectedStrategyId: strategyId,
 	}
+}
+
+export const actions: Actions = {
+	toggle: async ({ request, locals }) => {
+		const data = await request.formData()
+		const id = data.get('id') as string
+		const current = data.get('status') as string
+		const next = current === 'active' ? 'paused' : 'active'
+		await db.query(
+			`update policies set status = $1
+			 where id = $2 and strategy_id in (select id from strategies where user_id = $3)`,
+			[next, id, locals.user!.id]
+		)
+	},
+
+	delete: async ({ request, locals }) => {
+		const data = await request.formData()
+		const id = data.get('id') as string
+		await db.query(
+			`delete from policies where id = $1
+			 and strategy_id in (select id from strategies where user_id = $2)`,
+			[id, locals.user!.id]
+		)
+	},
 }
