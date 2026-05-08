@@ -109,7 +109,7 @@
 			crosshair: { mode: 1 },
 			width: chartContainer.clientWidth,
 			height: chartContainer.clientHeight,
-			timeScale: { fixLeftEdge: true, fixRightEdge: true },
+			timeScale: { fixLeftEdge: true, fixRightEdge: true, timeVisible: true, secondsVisible: false },
 		})
 		candleSeries = chart.addSeries(CandlestickSeries, {
 			upColor: '#22c55e', downColor: '#ef4444',
@@ -672,7 +672,7 @@
 
 	.chart-wrap {
 		flex: 1;
-		overflow: hidden;
+		overflow: visible;
 		position: relative;
 	}
 
