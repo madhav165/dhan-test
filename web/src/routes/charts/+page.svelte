@@ -328,7 +328,8 @@
 	function selectChart(c: typeof data.charts[0]) {
 		chartId = c.id
 		chartName = c.name
-		instrument = { security_id: c.security_id, exchange_segment: c.exchange_segment, trading_symbol: c.name, custom_symbol: c.name }
+		const tradingSymbol = c.name.replace(` · ${c.interval}`, '').trim()
+		instrument = { security_id: c.security_id, exchange_segment: c.exchange_segment, trading_symbol: tradingSymbol, custom_symbol: tradingSymbol }
 		interval = c.interval
 		indicators = c.indicators
 		fetchCandles()
@@ -342,6 +343,7 @@
 		indicators = []
 		candles = []
 		candleSeries?.setData([])
+		volumeSeries?.setData([])
 	}
 
 	function selectInstrument(inst: Instrument) {
@@ -464,7 +466,7 @@
 				<button
 					class="live-btn"
 					class:live-on={live}
-					onclick={() => { console.log('[live] button clicked, live=', live); live = !live }}
+					onclick={() => { live = !live }}
 					title={live ? 'Stop live feed' : 'Start live feed'}
 				>
 					<span class="live-dot"></span>{live ? 'Live' : 'Live'}
