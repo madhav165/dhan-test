@@ -2,7 +2,7 @@
 	import { onMount, onDestroy, untrack } from 'svelte'
 	import { enhance } from '$app/forms'
 	import { goto } from '$app/navigation'
-	import { createChart, ColorType, CandlestickSeries, LineSeries, type IChartApi, type ISeriesApi, type CandlestickData, type LineData } from 'lightweight-charts'
+	import { createChart, ColorType, CandlestickSeries, LineSeries, HistogramSeries, type IChartApi, type ISeriesApi, type CandlestickData, type LineData, type HistogramData } from 'lightweight-charts'
 	import InstrumentSearch from '$lib/components/InstrumentSearch.svelte'
 	import { loadIndicators, runIndicator } from '$lib/wasm/indicators'
 
@@ -34,6 +34,7 @@
 	let chartContainer: HTMLDivElement
 	let chart: IChartApi
 	let candleSeries: ISeriesApi<'Candlestick'>
+	let volumeSeries: ISeriesApi<'Histogram'>
 	let lineSeries: ISeriesApi<'Line'>[] = []
 	let rsiSeries: ISeriesApi<'Line'>[] = []
 
@@ -56,6 +57,11 @@
 			borderUpColor: '#22c55e', borderDownColor: '#ef4444',
 			wickUpColor: '#22c55e', wickDownColor: '#ef4444',
 		})
+		volumeSeries = chart.addSeries(HistogramSeries, {
+			priceFormat: { type: 'volume' },
+			priceScaleId: '',
+		}, 1)
+		volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.7, bottom: 0 } })
 
 		if (instrument) await fetchCandles()
 		chartReady = true
@@ -87,11 +93,19 @@
 	}
 
 	function renderCandles() {
-		const data: CandlestickData[] = candles.map(c => ({
+		const candleData: CandlestickData[] = candles.map(c => ({
 			time: c.timestamp as any,
 			open: c.open, high: c.high, low: c.low, close: c.close
 		}))
-		candleSeries.setData(data)
+		candleSeries.setData(candleData)
+
+		const volData: HistogramData[] = candles.map(c => ({
+			time: c.timestamp as any,
+			value: c.volume,
+			color: c.close >= c.open ? '#22c55e44' : '#ef444444',
+		}))
+		volumeSeries.setData(volData)
+
 		chart.timeScale().fitContent()
 	}
 
