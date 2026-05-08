@@ -86,7 +86,7 @@
 	let settingsOpen = $state(false)
 	let isMobile = $state(false)
 	let hideVolume = $state(false)
-	let mobileView = $state<'candles' | 'volume'>('candles')
+	let mobileView = $state<'candles' | 'volume' | 'oi'>('candles')
 
 	function updateMobileState() {
 		const mobile = window.matchMedia('(max-width: 768px)').matches
@@ -254,11 +254,12 @@
 	})
 
 
-	// Switch between candles-only and volume-only on mobile
+	// Switch between candles / volume / oi on mobile
 	$effect(() => {
 		if (!chart || !chartReady || !isMobile) return
 		if (mobileView === 'volume') {
 			candleSeries?.applyOptions({ visible: false })
+			oiSeries?.applyOptions({ visible: false })
 			chart.priceScale('right').applyOptions({ visible: false })
 			if (!volumeSeries) {
 				volumeSeries = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: 'vol' }, 0)
@@ -269,12 +270,28 @@
 			}
 			volumeSeries.applyOptions({ visible: true })
 			volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0 }, visible: true })
+		} else if (mobileView === 'oi') {
+			candleSeries?.applyOptions({ visible: false })
+			volumeSeries?.applyOptions({ visible: false })
+			chart.priceScale('right').applyOptions({ visible: false })
+			if (!oiSeries) {
+				oiSeries = chart.addSeries(HistogramSeries, { color: '#60a5fa88', priceFormat: { type: 'volume' }, priceScaleId: 'oi' }, 0)
+				if (candles.length > 0) oiSeries.setData(candles.map(c => ({
+					time: c.timestamp as any, value: c.oi,
+				})))
+			}
+			oiSeries.applyOptions({ visible: true })
+			oiSeries.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0 }, visible: true })
 		} else {
 			candleSeries?.applyOptions({ visible: true })
 			chart.priceScale('right').applyOptions({ visible: true })
 			if (volumeSeries) {
 				chart.removeSeries(volumeSeries)
 				volumeSeries = undefined as any
+			}
+			if (oiSeries) {
+				chart.removeSeries(oiSeries)
+				oiSeries = undefined as any
 			}
 		}
 	})
@@ -591,8 +608,13 @@
 			<span class="spacer"></span>
 
 			{#if isMobile}
-				<button class="view-toggle" onclick={() => mobileView = mobileView === 'candles' ? 'volume' : 'candles'} title="Toggle view">
-					{mobileView === 'candles' ? '≡' : '🕯'}
+				<button class="view-toggle" onclick={() => {
+					const isFnO = instrument && !['NSE_E', 'BSE_E', 'NSE_I'].includes(instrument.exchange_segment)
+					if (mobileView === 'candles') mobileView = 'volume'
+					else if (mobileView === 'volume' && isFnO) mobileView = 'oi'
+					else mobileView = 'candles'
+				}} title="Toggle view">
+					{mobileView === 'candles' ? '≡' : mobileView === 'volume' ? '🕯' : 'OI'}
 				</button>
 				<button class="settings-btn" class:active={settingsOpen} onclick={() => settingsOpen = !settingsOpen} title="Settings">⚙</button>
 			{:else}
