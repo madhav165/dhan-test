@@ -43,9 +43,9 @@ wasm:
 	cd rust && cargo build -p indicators-wasm --target wasm32-unknown-unknown --release
 	cp rust/target/wasm32-unknown-unknown/release/indicators_wasm.wasm web/static/indicators.wasm
 
-## Run pending migrations: make migrate DATABASE_URL=postgres://...
+## Run pending migrations (reads DATABASE_URL from .env)
 migrate:
-	migrate -path migrations -database "$(DATABASE_URL)" up
+	@set -a && . ./.env && set +a && migrate -path migrations -database "$$DATABASE_URL" up
 
 ## Run web dev server
 web:
