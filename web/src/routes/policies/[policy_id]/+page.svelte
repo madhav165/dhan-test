@@ -16,6 +16,7 @@
 	</div>
 	<div class="actions">
 		<span class="badge {policy.status}">{policy.status}</span>
+		<a href="/policies/{policy.id}/edit" class="btn-edit">Edit</a>
 		<form method="POST" action="?/toggle" use:enhance>
 			<button type="submit" class="btn-toggle {policy.status === 'active' ? 'pause' : 'activate'}">
 				{policy.status === 'active' ? 'Pause' : 'Activate'}
@@ -108,6 +109,17 @@
 	}
 
 	.btn-toggle.activate:hover { background: var(--accent-hover); }
+
+	.btn-edit {
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		color: var(--text-muted);
+		font-size: 0.875rem;
+		padding: 8px 16px;
+		text-decoration: none;
+	}
+
+	.btn-edit:hover { color: var(--text); }
 
 	.btn-delete {
 		background: none;

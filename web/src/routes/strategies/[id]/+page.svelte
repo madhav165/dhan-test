@@ -40,6 +40,7 @@
 		{:else}
 			<span class="badge draft">No WASM</span>
 		{/if}
+		<a href="/strategies/{strategy.id}/edit" class="btn-secondary">Edit</a>
 		{#if strategy.wasm_key}
 			<a href="/strategies/{strategy.id}/run" class="btn-primary">New run</a>
 		{/if}
