@@ -254,7 +254,7 @@
 			candleSeries?.applyOptions({ visible: false })
 			chart.priceScale('right').applyOptions({ visible: false })
 			if (!volumeSeries) {
-				volumeSeries = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: 'vol' }, 1)
+				volumeSeries = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: 'vol' }, 0)
 				if (candles.length > 0) volumeSeries.setData(candles.map(c => ({
 					time: c.timestamp as any, value: c.volume,
 					color: c.close >= c.open ? '#22c55e88' : '#ef444488',
