@@ -18,13 +18,15 @@ use std::cell::UnsafeCell;
 use indicators::rsi::rsi;
 use indicators::sma::sma;
 use indicators::ema::ema;
+use indicators::vwap::vwap;
 
-struct State { prices: Vec<f64>, signals: Vec<u8> }
+struct State { prices: Vec<f64>, volumes: Vec<f64>, signals: Vec<u8> }
 struct WasmState(UnsafeCell<State>);
 unsafe impl Sync for WasmState {}
 
 static STATE: WasmState = WasmState(UnsafeCell::new(State {
     prices: Vec::new(),
+    volumes: Vec::new(),
     signals: Vec::new(),
 }));
 
@@ -36,19 +38,28 @@ pub extern "C" fn alloc(len: u32) -> *mut f64 {
 }
 
 #[no_mangle]
+pub extern "C" fn alloc_volume(len: u32) -> *mut f64 {
+    let s = unsafe { &mut *STATE.0.get() };
+    s.volumes = vec![0.0; len as usize];
+    s.volumes.as_mut_ptr()
+}
+
+#[no_mangle]
 pub extern "C" fn run(len: u32) -> *mut u8 {
     let s = unsafe { &mut *STATE.0.get() };
     let n = len as usize;
     s.signals = vec![0u8; n];
     if n < 2 { return s.signals.as_mut_ptr(); }
     let prices = &s.prices[..n];
+    let vol_len = s.volumes.len().min(n);
+    let volumes = &s.volumes[..vol_len];
     for i in 1..n {
-        s.signals[i] = signal(prices, i) as u8;
+        s.signals[i] = signal(prices, volumes, i) as u8;
     }
     s.signals.as_mut_ptr()
 }
 
-fn signal(prices: &[f64], i: usize) -> u8 {
+fn signal(prices: &[f64], volumes: &[f64], i: usize) -> u8 {
     // USER CODE
 }
 "#;
@@ -96,7 +107,7 @@ async fn download(s3: &S3Client, bucket: &str, key: &str) -> Result<Vec<u8>, Str
     Ok(bytes.to_vec())
 }
 
-fn run_wasm(wasm: &[u8], closes: &[f64]) -> Result<Vec<u8>, String> {
+fn run_wasm(wasm: &[u8], closes: &[f64], volumes: &[f64]) -> Result<Vec<u8>, String> {
     use wasmtime::{Engine, Linker, Module, Store};
 
     let engine = Engine::default();
@@ -114,11 +125,19 @@ fn run_wasm(wasm: &[u8], closes: &[f64]) -> Result<Vec<u8>, String> {
 
     let len = closes.len() as u32;
     let ptr = alloc_fn.call(&mut store, len).map_err(|e| e.to_string())?;
-
     {
         let data = memory.data_mut(&mut store);
         for (i, &v) in closes.iter().enumerate() {
             let off = ptr as usize + i * 8;
+            data[off..off + 8].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+
+    if let Ok(alloc_vol_fn) = instance.get_typed_func::<u32, u32>(&mut store, "alloc_volume") {
+        let vol_ptr = alloc_vol_fn.call(&mut store, len).map_err(|e| e.to_string())?;
+        let data = memory.data_mut(&mut store);
+        for (i, &v) in volumes.iter().take(len as usize).enumerate() {
+            let off = vol_ptr as usize + i * 8;
             data[off..off + 8].copy_from_slice(&v.to_le_bytes());
         }
     }
@@ -380,7 +399,8 @@ async fn process_run_job(
     let results: Result<Vec<InstResult>, String> = inst_candles
         .into_par_iter()
         .map(|ic| {
-            let signals = run_wasm(&wasm, &ic.closes)?;
+            let volumes_f64: Vec<f64> = ic.volumes.iter().map(|&v| v as f64).collect();
+            let signals = run_wasm(&wasm, &ic.closes, &volumes_f64)?;
             let metrics = compute_metrics(&ic.closes, &signals, &charges.clone());
             Ok(InstResult {
                 security_id: ic.security_id,
