@@ -5,6 +5,7 @@ import type { Actions, PageServerLoad } from './$types'
 export const load: PageServerLoad = async ({ locals, params }) => {
 	const stratResult = await db.query(
 		`select s.id, s.name, s.source_key, s.wasm_key, s.created_at,
+		        s.strategy_type, s.rl_config, s.rl_summary,
 		        j.status as build_status, j.error as build_error
 		 from strategies s
 		 left join lateral (
@@ -44,8 +45,16 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 		[params.id]
 	)
 
+	const rlJobResult = await db.query(
+		`select status, error from rl_jobs where strategy_id = $1 order by created_at desc limit 1`,
+		[params.id]
+	)
+
 	return {
-		strategy: stratResult.rows[0],
+		strategy: {
+			...stratResult.rows[0],
+			rl_job: rlJobResult.rows[0] ?? null,
+		},
 		runs: runsResult.rows,
 		policies: policiesResult.rows,
 	}

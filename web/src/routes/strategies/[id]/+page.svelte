@@ -11,10 +11,13 @@
 	const building = $derived(
 		strategy.build_status === 'pending' || strategy.build_status === 'building'
 	)
+	const rlPending = $derived(
+		strategy.rl_job?.status === 'pending' || strategy.rl_job?.status === 'training'
+	)
 
 	let timer: ReturnType<typeof setInterval>
 	$effect(() => {
-		if (building) {
+		if (building || rlPending) {
 			timer = setInterval(() => invalidateAll(), 3000)
 		} else {
 			clearInterval(timer)
@@ -49,6 +52,48 @@
 		</form>
 	</div>
 </div>
+
+{#if strategy.strategy_type === 'rl'}
+	<section class="rl-section">
+		<h2>RL Training</h2>
+
+		{#if strategy.rl_job?.status === 'pending' || strategy.rl_job?.status === 'training'}
+			<p class="status-badge training">Training in progress…</p>
+		{:else if strategy.rl_job?.status === 'failed'}
+			<p class="status-badge failed">Training failed: {strategy.rl_job.error}</p>
+		{:else if strategy.rl_summary}
+			{@const summary = strategy.rl_summary}
+			<div class="summary-grid">
+				<div class="summary-item">
+					<span class="summary-label">Episodes</span>
+					<span class="summary-value">{summary.training_episodes}</span>
+				</div>
+				<div class="summary-item">
+					<span class="summary-label">Final reward</span>
+					<span class="summary-value">{summary.final_reward.toFixed(4)}</span>
+				</div>
+			</div>
+
+			<h3>Feature importance</h3>
+			<div class="feature-list">
+				{#each summary.feature_importance as f}
+					<div class="feature-row">
+						<span class="feature-name">{f.name}</span>
+						<div class="feature-bar-wrap">
+							<div class="feature-bar" style="width: {(f.importance * 100).toFixed(1)}%"></div>
+						</div>
+						<span class="feature-pct">{(f.importance * 100).toFixed(1)}%</span>
+					</div>
+				{/each}
+			</div>
+
+			<h3>Approximate rules</h3>
+			<pre class="rules-pre">{summary.approximate_rules}</pre>
+		{:else}
+			<p class="status-badge pending">Waiting to start…</p>
+		{/if}
+	</section>
+{/if}
 
 <section>
 	<div class="section-header">
@@ -253,4 +298,27 @@
 	.badge.failed { background: var(--red-bg); color: var(--red-muted); cursor: help; }
 	.badge.active { background: var(--green); color: #000; }
 	.badge.paused { background: var(--bg); color: var(--text-muted); }
+
+	.rl-section { margin-bottom: 32px; }
+	.rl-section h2 { color: var(--text-muted); font-size: 0.8rem; font-weight: 600; letter-spacing: 0.06em; margin: 0 0 12px; text-transform: uppercase; }
+	.rl-section h3 { color: var(--text-muted); font-size: 0.8rem; font-weight: 600; margin: 16px 0 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+	.status-badge { border-radius: 4px; display: inline-block; font-size: 0.85rem; padding: 6px 12px; }
+	.status-badge.training { background: #1e40af22; color: #60a5fa; }
+	.status-badge.failed { background: var(--red-bg); color: var(--red-muted); }
+	.status-badge.pending { background: var(--bg-surface); color: var(--text-muted); }
+
+	.summary-grid { display: flex; gap: 16px; }
+	.summary-item { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; }
+	.summary-label { color: var(--text-muted); display: block; font-size: 0.75rem; margin-bottom: 4px; }
+	.summary-value { font-size: 1.25rem; font-weight: 600; }
+
+	.feature-list { display: flex; flex-direction: column; gap: 6px; }
+	.feature-row { align-items: center; display: flex; gap: 10px; }
+	.feature-name { color: var(--text-muted); font-size: 0.8rem; min-width: 120px; }
+	.feature-bar-wrap { background: var(--bg-surface); border-radius: 3px; flex: 1; height: 6px; }
+	.feature-bar { background: var(--accent); border-radius: 3px; height: 100%; }
+	.feature-pct { color: var(--text-muted); font-size: 0.75rem; min-width: 36px; text-align: right; }
+
+	.rules-pre { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.8rem; line-height: 1.6; overflow-x: auto; padding: 12px; white-space: pre-wrap; }
 </style>
