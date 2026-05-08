@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -146,6 +147,8 @@ struct AppState {
     dhan_base_url: String,
     telegram_bot_token: String,
     enc_key: Vec<u8>,
+    /// user_ids with intraday runners currently active
+    active_intraday: Mutex<HashSet<String>>,
 }
 
 // ── db helpers ───────────────────────────────────────────────────────────────
@@ -514,6 +517,7 @@ async fn run_intraday_policies(
     user_ctx: &UserCtx,
     policies: &[&Policy],
 ) {
+    state.active_intraday.lock().await.insert(user_ctx.user_id.clone());
     // Build union of instruments across all intraday policies
     let mut instrument_set: HashMap<String, Instrument> = HashMap::new();
     for policy in policies {
@@ -632,6 +636,9 @@ async fn run_intraday_policies(
             }
         }
     }
+
+    // WebSocket exited (market close, disconnect, or token expiry) — deregister
+    state.active_intraday.lock().await.remove(&user_ctx.user_id);
 }
 
 // ── HTTP server (user-connected endpoint) ────────────────────────────────────
@@ -669,22 +676,40 @@ async fn main() {
         dhan_base_url,
         telegram_bot_token,
         enc_key,
+        active_intraday: Mutex::new(HashSet::new()),
     });
 
-    // 30s poll: reload active policies and trigger any that need running
+    // 30s poll: re-evaluate daily policies and start intraday runners at market open
     {
         let state = state.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(30)).await;
                 let users = load_active_policies(&state.db, &state.enc_key).await;
+                let in_market = is_market_hours();
+                let active = state.active_intraday.lock().await.clone();
+
                 for user_ctx in users {
-                    // Only re-run daily policies on poll (intraday are tick-driven once started)
-                    let daily: Vec<&Policy> = user_ctx.policies.iter()
-                        .filter(|p| p.interval == "day")
-                        .collect();
-                    for policy in daily {
+                    // Re-run daily policies every poll
+                    for policy in user_ctx.policies.iter().filter(|p| p.interval == "day") {
                         run_daily_policy(&state, &user_ctx, policy).await;
+                    }
+
+                    // Start intraday runners if market is open and not already running
+                    if in_market && !active.contains(&user_ctx.user_id) {
+                        let intraday: Vec<&Policy> = user_ctx.policies.iter()
+                            .filter(|p| p.interval != "day")
+                            .collect();
+                        if !intraday.is_empty() {
+                            let state = state.clone();
+                            let user_ctx = user_ctx.clone();
+                            tokio::spawn(async move {
+                                let intraday: Vec<&Policy> = user_ctx.policies.iter()
+                                    .filter(|p| p.interval != "day")
+                                    .collect();
+                                run_intraday_policies(&state, &user_ctx, &intraday).await;
+                            });
+                        }
                     }
                 }
             }
