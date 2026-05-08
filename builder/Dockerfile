@@ -4,8 +4,8 @@ RUN rustup target add wasm32-unknown-unknown
 
 WORKDIR /app
 
-# indicators crate available at /app/indicators for strategy compilation
-COPY rust/indicators/ indicators/
+# indicators crate — copied to match the relative path ../rust/indicators from /app
+COPY rust/indicators/ /rust/indicators/
 
 # Build the builder binary
 COPY builder/Cargo.toml Cargo.toml
