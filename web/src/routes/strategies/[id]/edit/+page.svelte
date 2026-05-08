@@ -1,11 +1,12 @@
 <script lang="ts">
+	import { untrack } from 'svelte'
 	import { enhance } from '$app/forms'
 	import RustEditor from '$lib/components/RustEditor.svelte'
 
 	let { data } = $props()
 
-	let code = $state(data.strategy.code ?? '')
-	let name = $state(data.strategy.name)
+	let code = $state(untrack(() => data.strategy.code ?? ''))
+	let name = $state(untrack(() => data.strategy.name))
 </script>
 
 <div class="header">
