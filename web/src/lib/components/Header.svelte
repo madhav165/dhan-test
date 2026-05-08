@@ -3,7 +3,7 @@
 </script>
 
 <header>
-	<span class="logo">Dhan</span>
+	<a href="/charts" class="logo">Dhan</a>
 	<div class="user">
 		<span class="name">{$user?.name}</span>
 		<form method="POST" action="/auth/logout">
@@ -32,6 +32,7 @@
 		color: var(--accent);
 		font-size: 18px;
 		font-weight: 700;
+		text-decoration: none;
 	}
 
 	.user {
