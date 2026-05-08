@@ -482,7 +482,7 @@
 				{/each}
 			</select>
 
-			<span class="toolbar-secondary" class:hidden={isMobile && !settingsOpen}>
+			{#if !isMobile}
 				<input type="date" class="date-input" bind:value={fromDate} min={IS_INTRADAY ? new Date(Date.now() - 5*365*24*60*60*1000).toISOString().slice(0,10) : undefined} max={toDate} onchange={() => instrument && fetchCandles()} disabled={live} />
 				<span class="date-sep">→</span>
 				<input type="date" class="date-input" bind:value={toDate} min={fromDate} onchange={() => instrument && fetchCandles()} disabled={live} />
@@ -494,10 +494,10 @@
 						onclick={() => { live = !live }}
 						title={live ? 'Stop live feed' : 'Start live feed'}
 					>
-						<span class="live-dot"></span>{live ? 'Live' : 'Live'}
+						<span class="live-dot"></span>Live
 					</button>
 				{/if}
-			</span>
+			{/if}
 
 			<span class="spacer"></span>
 
