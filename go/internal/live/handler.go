@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"math"
 	"net/http"
 	"strconv"
@@ -129,7 +128,6 @@ func (h *Handler) Live(w http.ResponseWriter, r *http.Request) {
 	dhanURL := fmt.Sprintf("%s?version=2&token=%s&clientId=%s&authType=2", dhanFeedURL, accessToken, clientID)
 	dhanConn, _, err := websocket.DefaultDialer.Dial(dhanURL, nil)
 	if err != nil {
-		log.Printf("live: dhan dial error: %v", err)
 		browserConn.WriteMessage(websocket.TextMessage, []byte(`{"error":"feed unavailable"}`))
 		return
 	}
@@ -143,8 +141,6 @@ func (h *Handler) Live(w http.ResponseWriter, r *http.Request) {
 	if err := dhanConn.WriteMessage(websocket.TextMessage, sub); err != nil {
 		return
 	}
-
-	log.Printf("live: streaming %s/%s for user %s", dhanSeg, securityID, userID)
 
 	buf := make([]byte, 0, 64)
 	for {

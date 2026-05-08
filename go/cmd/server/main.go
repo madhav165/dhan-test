@@ -17,6 +17,7 @@ import (
 	"github.com/madhav165/dhan-test/go/internal/instrument"
 	"github.com/madhav165/dhan-test/go/internal/live"
 	"github.com/madhav165/dhan-test/go/internal/market"
+	"github.com/madhav165/dhan-test/go/internal/result"
 	"github.com/madhav165/dhan-test/go/internal/run"
 )
 
@@ -70,6 +71,10 @@ func main() {
 	mh := market.NewHandler(database, key, os.Getenv("DHAN_BASE_URL"))
 	ch := &chart.Handler{DB: database, EncryptionKey: key, DhanBaseURL: os.Getenv("DHAN_BASE_URL")}
 	lh := live.NewHandler(database, key)
+	rh, err := result.NewHandler(database)
+	if err != nil {
+		log.Fatalf("result handler: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /internal/broker-token", h.StoreToken)
@@ -77,6 +82,7 @@ func main() {
 	ih.RegisterRoutes(mux)
 	ch.RegisterRoutes(mux)
 	lh.RegisterRoutes(mux)
+	rh.RegisterRoutes(mux)
 
 	port := os.Getenv("GO_PORT")
 	if port == "" {

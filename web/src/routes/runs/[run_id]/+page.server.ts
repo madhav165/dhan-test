@@ -11,6 +11,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 		        array_agg(
 		          json_build_object(
 		            'trading_symbol', i.trading_symbol,
+		            'security_id', ri.security_id,
 		            'exchange_segment', ri.exchange_segment
 		          ) order by i.trading_symbol
 		        ) as instruments

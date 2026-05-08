@@ -140,39 +140,75 @@ struct Metrics {
     max_drawdown: f64,
 }
 
-fn compute_metrics(closes: &[f64], signals: &[u8]) -> Metrics {
+#[derive(Clone)]
+struct BrokerCharges {
+    brokerage_flat: f64,
+    brokerage_pct: f64,
+    stt_buy_pct: f64,
+    stt_sell_pct: f64,
+    exchange_pct: f64,
+    sebi_pct: f64,
+    stamp_buy_pct: f64,
+    gst_pct: f64,
+}
+
+impl BrokerCharges {
+    fn cost(&self, buy_price: f64, sell_price: f64) -> f64 {
+        let brokerage = (self.brokerage_pct * buy_price).min(self.brokerage_flat)
+            + (self.brokerage_pct * sell_price).min(self.brokerage_flat);
+        let stt = self.stt_buy_pct * buy_price + self.stt_sell_pct * sell_price;
+        let exchange = self.exchange_pct * (buy_price + sell_price);
+        let sebi = self.sebi_pct * (buy_price + sell_price);
+        let stamp = self.stamp_buy_pct * buy_price;
+        let gst = self.gst_pct * (brokerage + exchange + sebi);
+        brokerage + stt + exchange + sebi + stamp + gst
+    }
+}
+
+fn compute_metrics(closes: &[f64], signals: &[u8], charges: &BrokerCharges) -> Metrics {
     let mut num_trades = 0i32;
     let mut wins = 0i32;
     let mut total_pnl = 0.0f64;
-    let mut entry: Option<f64> = None;
+    // (entry_price, is_long)
+    let mut entry: Option<(f64, bool)> = None;
     let mut cum_pnl = 0.0f64;
     let mut peak = 0.0f64;
     let mut max_drawdown = 0.0f64;
 
+    let mut record = |gross_pnl: f64, buy_price: f64, sell_price: f64| {
+        let cost = charges.cost(buy_price, sell_price);
+        let pnl = gross_pnl - cost;
+        total_pnl += pnl;
+        num_trades += 1;
+        if pnl > 0.0 { wins += 1; }
+        cum_pnl += pnl;
+        if cum_pnl > peak { peak = cum_pnl; }
+        let dd = peak - cum_pnl;
+        if dd > max_drawdown { max_drawdown = dd; }
+    };
+
     for (i, &sig) in signals.iter().enumerate() {
-        match sig {
-            1 if entry.is_none() => { entry = Some(closes[i]); }
-            2 if entry.is_some() => {
-                let e = entry.take().unwrap();
-                let pnl = closes[i] - e;
-                total_pnl += pnl;
-                num_trades += 1;
-                if pnl > 0.0 { wins += 1; }
-                cum_pnl += pnl;
-                if cum_pnl > peak { peak = cum_pnl; }
-                let dd = peak - cum_pnl;
-                if dd > max_drawdown { max_drawdown = dd; }
-            }
-            _ => {}
+        let is_long = sig == 1;
+        if sig == 0 { continue; }
+        if let Some((e, prev_long)) = entry.take() {
+            let (gross, buy_p, sell_p) = if prev_long {
+                (closes[i] - e, e, closes[i])
+            } else {
+                (e - closes[i], closes[i], e)
+            };
+            record(gross, buy_p, sell_p);
         }
+        entry = Some((closes[i], is_long));
     }
 
-    if let Some(e) = entry {
+    if let Some((e, is_long)) = entry {
         if let Some(&last) = closes.last() {
-            let pnl = last - e;
-            total_pnl += pnl;
-            num_trades += 1;
-            if pnl > 0.0 { wins += 1; }
+            let (gross, buy_p, sell_p) = if is_long {
+                (last - e, e, last)
+            } else {
+                (e - last, last, e)
+            };
+            record(gross, buy_p, sell_p);
         }
     }
 
@@ -308,6 +344,25 @@ async fn process_run_job(
         return Err("no candles found in DB for any instrument".to_string());
     }
 
+    let trade_type = if interval == "day" { "delivery" } else { "intraday" };
+    let charge_row = db.query_one(
+        "select brokerage_flat::float8, brokerage_pct::float8, stt_buy_pct::float8, \
+                stt_sell_pct::float8, exchange_pct::float8, sebi_pct::float8, \
+                stamp_buy_pct::float8, gst_pct::float8 \
+         from broker_charges where trade_type = $1",
+        &[&trade_type],
+    ).await.map_err(|e| e.to_string())?;
+    let charges = BrokerCharges {
+        brokerage_flat: charge_row.get(0),
+        brokerage_pct:  charge_row.get(1),
+        stt_buy_pct:    charge_row.get(2),
+        stt_sell_pct:   charge_row.get(3),
+        exchange_pct:   charge_row.get(4),
+        sebi_pct:       charge_row.get(5),
+        stamp_buy_pct:  charge_row.get(6),
+        gst_pct:        charge_row.get(7),
+    };
+
     // Parallel WASM execution across instruments
     struct InstResult {
         security_id: String,
@@ -326,7 +381,7 @@ async fn process_run_job(
         .into_par_iter()
         .map(|ic| {
             let signals = run_wasm(&wasm, &ic.closes)?;
-            let metrics = compute_metrics(&ic.closes, &signals);
+            let metrics = compute_metrics(&ic.closes, &signals, &charges.clone());
             Ok(InstResult {
                 security_id: ic.security_id,
                 exchange_segment: ic.exchange_segment,
@@ -358,6 +413,7 @@ async fn process_run_job(
     let mut total_wins = 0i32;
     let mut total_pnl = 0.0f64;
     let mut max_drawdown = 0.0f64;
+    let mut sig_map: std::collections::BTreeMap<String, Vec<serde_json::Value>> = std::collections::BTreeMap::new();
 
     for r in results {
         let n = r.closes.len();
@@ -365,6 +421,16 @@ async fn process_run_job(
         total_wins += (r.metrics.win_rate * r.metrics.num_trades as f64).round() as i32;
         total_pnl += r.metrics.total_pnl;
         if r.metrics.max_drawdown > max_drawdown { max_drawdown = r.metrics.max_drawdown; }
+
+        let key = format!("{}:{}", r.security_id, r.exchange_segment);
+        let entries: Vec<serde_json::Value> = r.timestamps.iter().zip(r.signals.iter())
+            .filter(|(_, &sig)| sig != 0)
+            .map(|(&ts, &sig)| serde_json::json!({"ts": ts, "sig": sig}))
+            .collect();
+        if !entries.is_empty() {
+            sig_map.insert(key, entries);
+        }
+
         col_sec.extend(std::iter::repeat(r.security_id).take(n));
         col_seg.extend(std::iter::repeat(r.exchange_segment).take(n));
         col_ts.extend_from_slice(&r.timestamps);
@@ -385,6 +451,9 @@ async fn process_run_job(
 
     let result_key = format!("runs/{}/result.parquet", run_id);
     upload(s3, bucket, &result_key, parquet).await?;
+
+    let signals_json = serde_json::to_vec(&sig_map).map_err(|e| e.to_string())?;
+    upload(s3, bucket, &format!("runs/{}/signals.json", run_id), signals_json).await?;
 
     db.execute(
         "update backtest_runs set result_key=$1, num_trades=$2, \

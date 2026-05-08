@@ -32,7 +32,7 @@
 					<div class="row-left">
 						<span class="strategy">{run.strategy_name}</span>
 						<span class="symbols">{run.symbols?.filter(Boolean).join(', ') || '—'}</span>
-						<span class="meta">{run.interval} · {run.from_date} → {run.to_date}</span>
+						<span class="meta">{run.interval} · {new Date(run.from_date).toISOString().slice(0, 10)} → {new Date(run.to_date).toISOString().slice(0, 10)}</span>
 					</div>
 					<div class="right">
 						<div class="metrics">
@@ -44,6 +44,10 @@
 						<span class="badge {run.job_status}">{run.job_status ?? 'unknown'}</span>
 					</div>
 				</a>
+				<form method="POST" action="?/delete" onsubmit={(e) => { if (!confirm('Delete this run?')) e.preventDefault() }}>
+					<input type="hidden" name="id" value={run.id} />
+					<button type="submit" class="del-btn">✕</button>
+				</form>
 			</li>
 		{/each}
 	</ul>
@@ -137,4 +141,19 @@
 	}
 
 	.btn-primary:hover { background: var(--accent-hover); }
+
+	li { display: flex; align-items: stretch; gap: 6px; }
+	li .row { flex: 1; }
+
+	.del-btn {
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		color: var(--text-muted);
+		cursor: pointer;
+		font-size: 0.75rem;
+		padding: 0 10px;
+	}
+
+	.del-btn:hover { border-color: var(--red-muted); color: var(--red-muted); }
 </style>

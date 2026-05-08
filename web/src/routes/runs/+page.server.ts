@@ -1,5 +1,6 @@
+import { GO_URL } from '$env/static/private'
 import { db } from '$lib/server/db'
-import type { PageServerLoad } from './$types'
+import type { Actions, PageServerLoad } from './$types'
 
 export const load: PageServerLoad = async ({ locals, url }) => {
 	const strategyId = url.searchParams.get('strategy_id')
@@ -32,5 +33,21 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		runs: result.rows,
 		strategies: strategiesResult.rows,
 		selectedStrategyId: strategyId,
+	}
+}
+
+export const actions: Actions = {
+	delete: async ({ request, locals }) => {
+		const data = await request.formData()
+		const id = data.get('id') as string
+		await fetch(`${GO_URL}/chart/run?run_id=${id}`, {
+			method: 'DELETE',
+			headers: { 'X-User-ID': locals.user!.id },
+		})
+		await db.query(
+			`delete from backtest_runs where id = $1
+			 and strategy_id in (select id from strategies where user_id = $2)`,
+			[id, locals.user!.id]
+		)
 	}
 }
