@@ -208,18 +208,25 @@ fn compute_metrics(closes: &[f64], signals: &[u8], charges: &BrokerCharges) -> M
         if dd > max_drawdown { max_drawdown = dd; }
     };
 
+    let mut prev_sig = 0u8;
     for (i, &sig) in signals.iter().enumerate() {
-        let is_long = sig == 1;
-        if sig == 0 { continue; }
+        if sig == prev_sig { prev_sig = sig; continue; }
+        // close existing position on any transition away from it
         if let Some((e, prev_long)) = entry.take() {
-            let (gross, buy_p, sell_p) = if prev_long {
-                (closes[i] - e, e, closes[i])
-            } else {
-                (e - closes[i], closes[i], e)
-            };
-            record(gross, buy_p, sell_p);
+            if sig == 0 || (sig == 2 && prev_long) || (sig == 1 && !prev_long) {
+                let (gross, buy_p, sell_p) = if prev_long {
+                    (closes[i] - e, e, closes[i])
+                } else {
+                    (e - closes[i], closes[i], e)
+                };
+                record(gross, buy_p, sell_p);
+            }
         }
-        entry = Some((closes[i], is_long));
+        // open new position on buy or sell signal
+        if sig == 1 || sig == 2 {
+            entry = Some((closes[i], sig == 1));
+        }
+        prev_sig = sig;
     }
 
     if let Some((e, is_long)) = entry {
