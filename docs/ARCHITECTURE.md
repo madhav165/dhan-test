@@ -83,6 +83,8 @@ Intraday runners stop when the WebSocket closes (market close, token expiry, or 
 
 **Alert delivery** writes a row to `live_signals` (policy, instrument, signal, price, timestamp) and calls the Telegram Bot API with the user's configured `telegram_chat_id`. The policy worker talks to Telegram directly — the Go service is not involved in the signal path.
 
+**Telegram connect** — users link their Telegram account from `/profile/alerts`. The Go service runs a bot poller goroutine (`getUpdates`, 30s long-poll) that listens for `/start` messages. On `/start` the bot generates a 6-digit OTP, stores it in `telegram_link_tokens` with a 10-minute expiry, and sends it to the user. The user pastes the code into the web app; SvelteKit verifies it, saves the `chat_id` to `users.telegram_chat_id`, and sends a confirmation message back via the Bot API. Only `chat_id` is needed for all subsequent alert delivery — no OAuth, no session with Telegram.
+
 **Trade mode** — when a policy's mode is `trade`, the policy worker writes a `trade_jobs` row instead of sending a signal alert, then sends a "trade queued" Telegram message. A deterministic `correlation_id` (hash of policy, instrument, signal direction, and price) is stored on the job to prevent duplicates if the same signal fires on multiple consecutive ticks before the job is processed.
 
 ### Trade execution

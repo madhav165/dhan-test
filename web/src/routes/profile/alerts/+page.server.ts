@@ -1,5 +1,6 @@
 import { db } from '$lib/server/db'
 import { fail } from '@sveltejs/kit'
+import { TELEGRAM_BOT_NAME, TELEGRAM_BOT_TOKEN } from '$env/static/private'
 import type { Actions, PageServerLoad } from './$types'
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -9,7 +10,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	)
 	return {
 		telegramConnected: !!result.rows[0]?.telegram_chat_id,
-		botName: process.env.TELEGRAM_BOT_NAME ?? ''
+		botName: TELEGRAM_BOT_NAME ?? ''
 	}
 }
 
@@ -36,6 +37,14 @@ export const actions: Actions = {
 
 		await db.query(`update users set telegram_chat_id = $1 where id = $2`, [chatId, locals.user!.id])
 		await db.query(`delete from telegram_link_tokens where token = $1`, [token])
+
+		if (TELEGRAM_BOT_TOKEN) {
+			await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ chat_id: chatId, text: '✅ Connected! You will now receive alerts here.' })
+			})
+		}
 
 		return { success: true }
 	},
