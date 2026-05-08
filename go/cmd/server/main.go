@@ -19,6 +19,7 @@ import (
 	"github.com/madhav165/dhan-test/go/internal/market"
 	"github.com/madhav165/dhan-test/go/internal/result"
 	"github.com/madhav165/dhan-test/go/internal/run"
+	"github.com/madhav165/dhan-test/go/internal/telegram"
 )
 
 //go:embed migrations
@@ -63,6 +64,11 @@ func main() {
 	}
 
 	go instrument.RunScheduler(database)
+
+	if botToken := os.Getenv("TELEGRAM_BOT_TOKEN"); botToken != "" {
+		bot := &telegram.Bot{Token: botToken, DB: database}
+		go bot.PollForever()
+	}
 
 	runWorker := &run.Worker{DB: database, EncKey: key, DhanBaseURL: os.Getenv("DHAN_BASE_URL")}
 	go runWorker.Start()
