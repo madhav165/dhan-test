@@ -1153,5 +1153,8 @@
 			padding: 8px 10px;
 		}
 
+		.chart-list-sidebar {
+			display: none;
+		}
 	}
 </style>
