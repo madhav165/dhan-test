@@ -232,7 +232,7 @@
 		if (!window.matchMedia('(max-width: 768px)').matches) {
 			volumeSeries = chart.addSeries(HistogramSeries, {
 				priceFormat: { type: 'volume' },
-				priceScaleId: '',
+				priceScaleId: 'vol',
 			}, 1)
 			volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.7, bottom: 0 } })
 		}
@@ -253,7 +253,7 @@
 		if (mobileView === 'volume') {
 			candleSeries?.applyOptions({ visible: false })
 			if (!volumeSeries) {
-				volumeSeries = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: '' }, 1)
+				volumeSeries = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: 'vol' }, 1)
 				if (candles.length > 0) volumeSeries.setData(candles.map(c => ({
 					time: c.timestamp as any, value: c.volume,
 					color: c.close >= c.open ? '#22c55e88' : '#ef444488',
@@ -399,7 +399,7 @@
 			if (!window.matchMedia('(max-width: 768px)').matches) {
 				volumeSeries = chart.addSeries(HistogramSeries, {
 					priceFormat: { type: 'volume' },
-					priceScaleId: '',
+					priceScaleId: 'vol',
 				}, 1)
 				volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.7, bottom: 0 } })
 			}
