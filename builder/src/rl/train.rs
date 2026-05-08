@@ -20,7 +20,7 @@ impl MLP {
         let mut rng = rand::rng();
         let scale = (2.0 / input_size as f64).sqrt();
         let normal = Normal::new(0.0, scale).unwrap();
-        let init = |n: usize| -> Vec<f64> { (0..n).map(|_| normal.sample(&mut rng)).collect() };
+        let mut init = |n: usize| -> Vec<f64> { (0..n).map(|_| normal.sample(&mut rng)).collect() };
         Self {
             w1: init(hidden_size * input_size),
             b1: vec![0.0; hidden_size],

@@ -1,3 +1,8 @@
+mod rl;
+use rl::features::{Candles, IndicatorSpec, compute_indicators, build_state_matrix, normalise};
+use rl::train::{TrainConfig, train as rl_train, weights_to_bytes};
+use rl::distill::{feature_importance, normalise_importance, distil};
+
 use std::env;
 use std::fs;
 use std::process::Command;
@@ -549,6 +554,144 @@ indicators = {{ path = "/app/indicators" }}
     Ok((source_key, wasm_key))
 }
 
+async fn process_rl_job(
+    db: &tokio_postgres::Client,
+    s3: &S3Client,
+    bucket: &str,
+    job_id: uuid::Uuid,
+    strategy_id: uuid::Uuid,
+) -> Result<(), String> {
+    db.execute(
+        "update rl_jobs set status='training', updated_at=now() where id=$1",
+        &[&job_id],
+    ).await.map_err(|e| e.to_string())?;
+
+    let row = db.query_one(
+        "select rl_config from strategies where id=$1",
+        &[&strategy_id],
+    ).await.map_err(|e| e.to_string())?;
+
+    let rl_config: serde_json::Value = row.get(0);
+
+    let train_from: String = rl_config["train_from"].as_str().unwrap_or("").to_string();
+    let train_to: String = rl_config["train_to"].as_str().unwrap_or("").to_string();
+    let lookback = rl_config["lookback_candles"].as_u64().unwrap_or(20) as usize;
+    let allow_short = rl_config["allow_short"].as_bool().unwrap_or(false);
+    let reward_type = rl_config["reward"].as_str().unwrap_or("pnl").to_string();
+
+    let indicator_specs: Vec<IndicatorSpec> = serde_json::from_value(
+        rl_config["indicators"].clone()
+    ).map_err(|e| e.to_string())?;
+
+    let mut penalty_holding = None;
+    let mut max_holding_days = None;
+    let mut penalty_trades = None;
+    let mut max_trades_per_month = None;
+    if let Some(arr) = rl_config["constraints"].as_array() {
+        for c in arr {
+            match c["type"].as_str().unwrap_or("") {
+                "max_holding_days" => {
+                    max_holding_days = c["value"].as_u64().map(|v| v as usize);
+                    penalty_holding = Some(0.01);
+                }
+                "max_trades_per_month" => {
+                    max_trades_per_month = c["value"].as_u64().map(|v| v as usize);
+                    penalty_trades = Some(0.01);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let inst_row = db.query_opt(
+        "select ri.security_id, ri.exchange_segment
+         from backtest_run_instruments ri
+         join backtest_runs r on r.id = ri.run_id
+         where r.strategy_id = $1
+         limit 1",
+        &[&strategy_id],
+    ).await.map_err(|e| e.to_string())?;
+
+    let (security_id, exchange_segment) = match inst_row {
+        Some(r) => (r.get::<_, String>(0), r.get::<_, String>(1)),
+        None => return Err("No instrument found — run a backtest first to select an instrument".into()),
+    };
+
+    let candle_rows = db.query(
+        "select extract(epoch from timestamp)::bigint, open::float8, high::float8,
+                low::float8, close::float8, volume
+         from candles
+         where security_id=$1 and exchange_segment=$2 and interval='day'
+         and timestamp::date between $3::text::date and $4::text::date
+         order by timestamp",
+        &[&security_id, &exchange_segment, &train_from, &train_to],
+    ).await.map_err(|e| e.to_string())?;
+
+    if candle_rows.is_empty() {
+        return Err(format!("No daily candles found for {} {} in {} to {}", security_id, exchange_segment, train_from, train_to));
+    }
+
+    let candles = Candles {
+        opens:   candle_rows.iter().map(|r| r.get::<_, f64>(1)).collect(),
+        highs:   candle_rows.iter().map(|r| r.get::<_, f64>(2)).collect(),
+        lows:    candle_rows.iter().map(|r| r.get::<_, f64>(3)).collect(),
+        closes:  candle_rows.iter().map(|r| r.get::<_, f64>(4)).collect(),
+        volumes: candle_rows.iter().map(|r| r.get::<_, i64>(5) as f64).collect(),
+    };
+
+    let indicator_series = compute_indicators(&candles, &indicator_specs);
+    let (mut states, feature_names) = build_state_matrix(&candles, &indicator_series, lookback);
+    normalise(&mut states);
+
+    let cfg = TrainConfig {
+        max_episodes: 500,
+        episode_steps: states.nrows().min(200),
+        lr: 3e-4,
+        gamma: 0.99,
+        clip_eps: 0.2,
+        allow_short,
+        reward_type,
+        penalty_holding_days: penalty_holding,
+        max_holding_days,
+        penalty_trades_per_month: penalty_trades,
+        max_trades_per_month,
+    };
+
+    let result = rl_train(&states, &candles.closes, lookback, &cfg);
+
+    let weights = weights_to_bytes(&result.net);
+    let weights_key = format!("strategies/{}/weights.bin", strategy_id);
+    upload(s3, bucket, &weights_key, weights).await?;
+
+    let raw_imp = feature_importance(&result.net, &states);
+    let norm_imp = normalise_importance(&raw_imp);
+    let feature_importance_json: Vec<serde_json::Value> = feature_names.iter()
+        .zip(norm_imp.iter())
+        .map(|(name, &imp)| serde_json::json!({ "name": name, "importance": imp }))
+        .collect();
+
+    let approx_rules = distil(&result.net, &states, &feature_names, 3);
+
+    let rl_summary = serde_json::json!({
+        "feature_importance": feature_importance_json,
+        "approximate_rules": approx_rules,
+        "training_episodes": result.episodes,
+        "final_reward": result.final_reward,
+    });
+
+    db.execute(
+        "update strategies set rl_summary=$1 where id=$2",
+        &[&rl_summary, &strategy_id],
+    ).await.map_err(|e| e.to_string())?;
+
+    db.execute(
+        "update rl_jobs set status='done', updated_at=now() where id=$1",
+        &[&job_id],
+    ).await.map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL required");
@@ -638,6 +781,30 @@ async fn main() {
                     eprintln!("builder: run failed {}: {}", run_id, e);
                     db.execute(
                         "update run_jobs set status='failed', error=$1, updated_at=now() where id=$2",
+                        &[&e, &job_id],
+                    ).await.ok();
+                }
+            }
+        }
+
+        // rl jobs
+        let rl_rows = db.query(
+            "select id, strategy_id from rl_jobs where status = 'pending' order by created_at limit 1",
+            &[],
+        ).await.unwrap_or_default();
+
+        for row in rl_rows {
+            let job_id: uuid::Uuid = row.get(0);
+            let strategy_id: uuid::Uuid = row.get(1);
+
+            println!("builder: starting rl training for strategy {}", strategy_id);
+
+            match process_rl_job(&db, &s3, &bucket, job_id, strategy_id).await {
+                Ok(()) => println!("builder: rl training done {}", strategy_id),
+                Err(e) => {
+                    eprintln!("builder: rl training failed {}: {}", strategy_id, e);
+                    db.execute(
+                        "update rl_jobs set status='failed', error=$1, updated_at=now() where id=$2",
                         &[&e, &job_id],
                     ).await.ok();
                 }
