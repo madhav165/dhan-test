@@ -470,7 +470,7 @@
 				{/each}
 			</select>
 
-			<input type="date" class="date-input" bind:value={fromDate} min={new Date(Date.now() - 5*365*24*60*60*1000).toISOString().slice(0,10)} max={toDate} onchange={() => instrument && fetchCandles()} disabled={live} />
+			<input type="date" class="date-input" bind:value={fromDate} min={IS_INTRADAY ? new Date(Date.now() - 5*365*24*60*60*1000).toISOString().slice(0,10) : undefined} max={toDate} onchange={() => instrument && fetchCandles()} disabled={live} />
 			<span class="date-sep">→</span>
 			<input type="date" class="date-input" bind:value={toDate} min={fromDate} onchange={() => instrument && fetchCandles()} disabled={live} />
 
