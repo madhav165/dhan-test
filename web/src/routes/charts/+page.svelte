@@ -342,8 +342,20 @@
 		interval = 'day'
 		indicators = []
 		candles = []
-		candleSeries?.setData([])
-		volumeSeries?.setData([])
+		if (chart && candleSeries && volumeSeries) {
+			chart.removeSeries(candleSeries)
+			chart.removeSeries(volumeSeries)
+			candleSeries = chart.addSeries(CandlestickSeries, {
+				upColor: '#22c55e', downColor: '#ef4444',
+				borderUpColor: '#22c55e', borderDownColor: '#ef4444',
+				wickUpColor: '#22c55e', wickDownColor: '#ef4444',
+			})
+			volumeSeries = chart.addSeries(HistogramSeries, {
+				priceFormat: { type: 'volume' },
+				priceScaleId: '',
+			}, 1)
+			volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.7, bottom: 0 } })
+		}
 	}
 
 	function selectInstrument(inst: Instrument) {
