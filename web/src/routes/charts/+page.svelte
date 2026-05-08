@@ -41,7 +41,6 @@
 	let loading = $state(false)
 	let error = $state('')
 
-	const GO_BASE = 'http://localhost:8080'
 	const INTERVALS = ['1min', '5min', '15min', '25min', '60min', 'day']
 
 	onMount(async () => {
@@ -74,7 +73,7 @@
 
 		try {
 			const res = await fetch(
-				`${GO_BASE}/chart/candles?security_id=${instrument.security_id}&exchange_segment=${instrument.exchange_segment}&interval=${interval}&from=${from}&to=${to}`
+				`/api/candles?security_id=${instrument.security_id}&exchange_segment=${instrument.exchange_segment}&interval=${interval}&from=${from}&to=${to}`
 			)
 			if (!res.ok) throw new Error(await res.text())
 			candles = await res.json()

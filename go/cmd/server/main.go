@@ -43,7 +43,7 @@ func main() {
 
 	ih := &instrument.Handler{DB: database}
 	mh := market.NewHandler(database, key, os.Getenv("DHAN_BASE_URL"))
-	ch := &chart.Handler{DB: database}
+	ch := &chart.Handler{DB: database, EncryptionKey: key, DhanBaseURL: os.Getenv("DHAN_BASE_URL")}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /internal/broker-token", h.StoreToken)
