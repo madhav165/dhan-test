@@ -14,6 +14,11 @@ up:
 ## Start full local stack (Postgres + MinIO + Builder + Go)
 up-local: wasm
 	$(LOCAL) up --build -d
+	@echo "Waiting for Postgres..."
+	@set -a && . ./.env && set +a && \
+	  until pg_isready -d "$$DATABASE_URL" -q; do sleep 1; done && \
+	  migrate -path migrations -database "$$DATABASE_URL" up && \
+	  echo "Migrations done."
 
 ## Stop Go service
 down:
