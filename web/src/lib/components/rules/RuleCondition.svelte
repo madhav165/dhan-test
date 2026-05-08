@@ -22,6 +22,7 @@
 	function defaultIndicator(name: string): Indicator {
 		if (name === 'macd') return { name: 'macd', component: 'macd', fast: 12, slow: 26, signal_period: 9 }
 		if (name === 'bb') return { name: 'bb', component: 'upper', period: 20 }
+		if (name === 'vwap') return { name: 'vwap' }
 		return { name: name as any, period: 14 }
 	}
 
@@ -72,7 +73,7 @@
 			</select>
 			<input type="number" value={condition.left.indicator.period} min="1" class="num-sm"
 				oninput={(e) => patchIndicator('left', { period: +(e.target as HTMLInputElement).value })} />
-		{:else}
+		{:else if condition.left.indicator.name !== 'vwap'}
 			<input type="number" value={condition.left.indicator.period} min="1" class="num-sm"
 				oninput={(e) => patchIndicator('left', { period: +(e.target as HTMLInputElement).value })} />
 		{/if}
@@ -118,7 +119,7 @@
 			</select>
 			<input type="number" value={condition.right.indicator.period} min="1" class="num-sm"
 				oninput={(e) => patchIndicator('right', { period: +(e.target as HTMLInputElement).value })} />
-		{:else}
+		{:else if condition.right.indicator.name !== 'vwap'}
 			<input type="number" value={condition.right.indicator.period} min="1" class="num-sm"
 				oninput={(e) => patchIndicator('right', { period: +(e.target as HTMLInputElement).value })} />
 		{/if}

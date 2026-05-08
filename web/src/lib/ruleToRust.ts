@@ -3,6 +3,7 @@ import type { Condition, Group, Indicator, Operand, RuleSet } from './types/rule
 function indicatorKey(ind: Indicator): string {
 	if (ind.name === 'macd') return `macd_${ind.fast}_${ind.slow}_${ind.signal_period}`
 	if (ind.name === 'bb') return `bb_${ind.period}`
+	if (ind.name === 'vwap') return 'vwap'
 	return `${ind.name}_${ind.period}`
 }
 
@@ -39,7 +40,9 @@ function collectAllIndicators(rs: RuleSet): Map<string, Indicator> {
 function emitDeclarations(indicators: Map<string, Indicator>): string {
 	const lines: string[] = []
 	for (const [key, ind] of indicators) {
-		if (ind.name === 'rsi' || ind.name === 'sma' || ind.name === 'ema' || ind.name === 'vwap') {
+		if (ind.name === 'vwap') {
+			lines.push(`    let ${key} = vwap(prices, volumes);`)
+		} else if (ind.name === 'rsi' || ind.name === 'sma' || ind.name === 'ema') {
 			lines.push(`    let ${key} = ${ind.name}(prices, ${ind.period});`)
 		} else if (ind.name === 'macd') {
 			lines.push(`    let (${key}_macd, ${key}_signal, ${key}_histogram) = macd(prices, ${ind.fast}, ${ind.slow}, ${ind.signal_period});`)
