@@ -1,7 +1,11 @@
 COMPOSE = docker compose
 LOCAL   = $(COMPOSE) --profile local
 
-.PHONY: up up-local down down-local down-clean logs build web go
+.PHONY: help up up-local down down-local down-clean logs build web go
+
+## Show this help
+help:
+	@grep -E '^## ' Makefile | sed 's/^## //'
 
 ## Start Go service only (needs external DB)
 up:
