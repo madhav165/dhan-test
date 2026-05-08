@@ -37,6 +37,9 @@
 
 <aside>
 	<nav>
+		<a href="/charts" class="nav-link" class:active={$page.url.pathname.startsWith('/charts')}>
+			Charts
+		</a>
 		<a href="/strategies" class="nav-link" class:active={$page.url.pathname.startsWith('/strategies')}>
 			Strategies
 		</a>

@@ -8,6 +8,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/madhav165/dhan-test/go/internal/broker"
+	"github.com/madhav165/dhan-test/go/internal/chart"
 	"github.com/madhav165/dhan-test/go/internal/db"
 	"github.com/madhav165/dhan-test/go/internal/instrument"
 	"github.com/madhav165/dhan-test/go/internal/market"
@@ -41,13 +42,14 @@ func main() {
 	go runWorker.Start()
 
 	ih := &instrument.Handler{DB: database}
-
 	mh := market.NewHandler(database, key, os.Getenv("DHAN_BASE_URL"))
+	ch := &chart.Handler{DB: database}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /internal/broker-token", h.StoreToken)
 	mh.RegisterRoutes(mux)
 	ih.RegisterRoutes(mux)
+	ch.RegisterRoutes(mux)
 
 	port := os.Getenv("GO_PORT")
 	if port == "" {

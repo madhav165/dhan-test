@@ -1,7 +1,7 @@
 COMPOSE = docker compose
 LOCAL   = $(COMPOSE) --profile local
 
-.PHONY: help up up-local down down-local down-clean logs build web
+.PHONY: help up up-local down down-local down-clean logs build wasm web
 
 ## Show this help
 help:
@@ -38,6 +38,11 @@ logs-%:
 ## Rebuild without cache
 build:
 	$(LOCAL) build --no-cache
+
+## Build indicators.wasm and copy to web/static
+wasm:
+	cd rust && cargo build -p indicators-wasm --target wasm32-unknown-unknown --release
+	cp rust/target/wasm32-unknown-unknown/release/indicators_wasm.wasm web/static/indicators.wasm
 
 ## Run web dev server
 web:
