@@ -20,7 +20,9 @@
 						<span class="name">{s.name}</span>
 						<span class="meta">Created {new Date(s.created_at).toLocaleDateString('en-IN')}</span>
 					</div>
-					<span class="badge {s.wasm_key ? 'ready' : 'draft'}">{s.wasm_key ? 'WASM ready' : 'No WASM'}</span>
+					<span class="badge {s.strategy_type === 'rl' ? 'rl' : s.wasm_key ? 'ready' : 'draft'}">
+						{s.strategy_type === 'rl' ? 'RL' : s.wasm_key ? 'WASM ready' : 'No WASM'}
+					</span>
 				</a>
 				<form method="POST" action="?/delete" use:enhance onsubmit={(e) => { if (!confirm('Delete this strategy and all its runs and policies?')) e.preventDefault() }}>
 					<input type="hidden" name="id" value={s.id} />
@@ -133,4 +135,5 @@
 
 	.badge.draft { background: var(--bg); color: var(--text-muted); }
 	.badge.ready { background: var(--green); color: #000; }
+	.badge.rl { background: #7c3aed22; color: #a78bfa; }
 </style>
