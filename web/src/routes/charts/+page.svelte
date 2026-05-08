@@ -119,11 +119,14 @@
 	const IS_INTRADAY = $derived(interval !== 'day')
 
 	async function startLive() {
+		console.log('[live] startLive called', { instrument, IS_INTRADAY, goWsUrl: data.goWsUrl })
 		if (!instrument || !IS_INTRADAY) return
 		stopLive()
 		const res = await fetch(`/api/live?security_id=${instrument.security_id}&exchange_segment=${instrument.exchange_segment}`)
+		console.log('[live] token response', res.status)
 		if (!res.ok) { error = 'Failed to get live token'; return }
 		const { token } = await res.json()
+		console.log('[live] connecting to', `${data.goWsUrl}/chart/live`)
 		const ws = new WebSocket(`${data.goWsUrl}/chart/live?token=${token}`)
 		liveWs = ws
 		ws.onopen = () => console.log('[live] WS open')
@@ -175,6 +178,7 @@
 	}
 
 	$effect(() => {
+		console.log('[live] effect fired, live=', live)
 		if (live) {
 			untrack(() => startLive())
 		} else {
@@ -473,7 +477,7 @@
 				<button
 					class="live-btn"
 					class:live-on={live}
-					onclick={() => { live = !live }}
+					onclick={() => { console.log('[live] button clicked, live=', live); live = !live }}
 					title={live ? 'Stop live feed' : 'Start live feed'}
 				>
 					<span class="live-dot"></span>{live ? 'Live' : 'Live'}
