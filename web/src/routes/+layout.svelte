@@ -21,7 +21,7 @@
 	<Header />
 	<div class="shell">
 		<Sidebar />
-		<main>{@render children()}</main>
+		<main class:full-bleed={$page.url.pathname.startsWith('/charts')}>{@render children()}</main>
 	</div>
 {:else}
 	{@render children()}
@@ -36,9 +36,16 @@
 	main {
 		margin-left: 200px;
 		padding: 32px;
-		width: 100%;
-		min-height: calc(100vh - 56px);
+		width: calc(100% - 200px);
+		height: calc(100vh - 56px);
+		overflow-y: auto;
 		background: var(--bg);
 		color: var(--text);
+		box-sizing: border-box;
+	}
+
+	main.full-bleed {
+		padding: 0;
+		overflow: hidden;
 	}
 </style>
