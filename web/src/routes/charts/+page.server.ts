@@ -1,7 +1,15 @@
-import { GO_URL } from '$env/static/private'
+import { GO_URL, ENCRYPTION_KEY } from '$env/static/private'
 import { db } from '$lib/server/db'
+import { createHmac } from 'crypto'
 import { fail, redirect } from '@sveltejs/kit'
 import type { Actions, PageServerLoad } from './$types'
+
+function makeWsToken(userId: string): string {
+	const expiry = Math.floor(Date.now() / 1000) + 5 * 60 // 5 min TTL
+	const payload = Buffer.from(JSON.stringify({ u: userId, x: expiry })).toString('base64url')
+	const sig = createHmac('sha256', Buffer.from(ENCRYPTION_KEY, 'hex')).update(payload).digest('hex')
+	return `${payload}.${sig}`
+}
 
 export const load: PageServerLoad = async ({ locals }) => {
 	const result = await db.query(
@@ -12,7 +20,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 		[locals.user!.id]
 	)
 	const goWsUrl = GO_URL.replace(/^http/, 'ws')
-	return { charts: result.rows, goWsUrl }
+	const wsToken = makeWsToken(locals.user!.id)
+	return { charts: result.rows, goWsUrl, wsToken }
 }
 
 export const actions: Actions = {

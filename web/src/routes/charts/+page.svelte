@@ -92,7 +92,7 @@
 		return { from, to }
 	}
 
-	let { from: initFrom, to: initTo } = defaultDates(interval)
+	let { from: initFrom, to: initTo } = defaultDates(untrack(() => interval))
 	let fromDate = $state(initFrom)
 	let toDate = $state(initTo)
 
@@ -119,20 +119,12 @@
 	const IS_INTRADAY = $derived(interval !== 'day')
 
 	async function startLive() {
-		console.log('[live] startLive called', { instrument, IS_INTRADAY, goWsUrl: data.goWsUrl })
 		if (!instrument || !IS_INTRADAY) return
 		stopLive()
-		const res = await fetch(`/api/live?security_id=${instrument.security_id}&exchange_segment=${instrument.exchange_segment}`)
-		console.log('[live] token response', res.status)
-		if (!res.ok) { error = 'Failed to get live token'; return }
-		const { token } = await res.json()
-		console.log('[live] connecting to', `${data.goWsUrl}/chart/live`)
-		const ws = new WebSocket(`${data.goWsUrl}/chart/live?token=${token}`)
+		const ws = new WebSocket(`${data.goWsUrl}/chart/live?token=${data.wsToken}&security_id=${instrument.security_id}&exchange_segment=${instrument.exchange_segment}`)
 		liveWs = ws
-		ws.onopen = () => console.log('[live] WS open')
 		ws.onmessage = ({ data: raw }) => {
 			const tick: { ltp: number; ltt: number; vol: number } = JSON.parse(raw)
-			console.log('[live] tick', tick)
 			if (tick.ltt === 0) return
 			const ivSec = INTERVAL_SECONDS[interval]
 			const bucketTime = Math.floor(tick.ltt / ivSec) * ivSec
@@ -149,26 +141,22 @@
 			formingClose = tick.ltp
 			const deltaVol = Math.max(0, tick.vol - prevVolume)
 			prevVolume = tick.vol
-			try {
-				candleSeries.update({
-					time: bucketTime as any,
-					open: formingOpen,
-					high: formingHigh,
-					low: formingLow,
-					close: formingClose,
-				})
-				volumeSeries.update({
-					time: bucketTime as any,
-					value: deltaVol,
-					color: formingClose >= formingOpen ? '#22c55e44' : '#ef444444',
-				})
-				chart.timeScale().scrollToRealTime()
-			} catch (e) {
-				console.error('[live] chart update error', e)
-			}
+			candleSeries.update({
+				time: bucketTime as any,
+				open: formingOpen,
+				high: formingHigh,
+				low: formingLow,
+				close: formingClose,
+			})
+			volumeSeries.update({
+				time: bucketTime as any,
+				value: deltaVol,
+				color: formingClose >= formingOpen ? '#22c55e44' : '#ef444444',
+			})
+			chart.timeScale().scrollToRealTime()
 		}
-		ws.onerror = (e) => { console.error('[live] WS error', e); error = 'Live feed error'; live = false }
-		ws.onclose = (e) => { console.log('[live] WS close', e.code, e.reason); if (live) { live = false } }
+		ws.onerror = () => { error = 'Live feed error'; live = false }
+		ws.onclose = () => { if (live) { live = false } }
 	}
 
 	function stopLive() {
@@ -178,7 +166,6 @@
 	}
 
 	$effect(() => {
-		console.log('[live] effect fired, live=', live)
 		if (live) {
 			untrack(() => startLive())
 		} else {
@@ -443,7 +430,7 @@
 							<div class="menu-wrap">
 								<button class="dots-btn" onclick={(e) => toggleMenu(c.id, e)}>···</button>
 								{#if menuOpenId === c.id}
-									<div class="menu" role="menu" onclick={(e) => e.stopPropagation()}>
+									<div class="menu" role="menu" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
 										<button onclick={() => { startRename(c); closeMenu() }}>Rename</button>
 										<form method="POST" action="?/delete" use:enhance={() => async ({ update }) => { await update(); await invalidateAll() }}>
 											<input type="hidden" name="id" value={c.id} />
@@ -896,7 +883,7 @@
 		padding-top: 12px;
 	}
 
-	.panel-actions form, .panel-actions .btn-primary { width: 100%; }
+	.panel-actions .btn-primary { width: 100%; }
 
 	.btn-primary {
 		background: var(--accent);
@@ -953,17 +940,4 @@
 		50% { opacity: 0.3; }
 	}
 
-	.btn-secondary {
-		background: none;
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		color: var(--text-muted);
-		cursor: pointer;
-		font-family: 'Inter', sans-serif;
-		font-size: 0.8rem;
-		padding: 6px 12px;
-		white-space: nowrap;
-	}
-
-	.btn-secondary:hover { color: var(--text); }
 </style>

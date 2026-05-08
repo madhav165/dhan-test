@@ -1,9 +1,9 @@
 package live
 
 import (
-	"database/sql"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -41,10 +41,11 @@ func NewHandler(db *sql.DB, key []byte) *Handler {
 	}
 }
 
-// MakeToken creates a short-lived HMAC-signed token encoding user/instrument/expiry.
-func MakeToken(key []byte, userID, securityID, exchangeSegment string, ttl time.Duration) string {
+// MakeToken creates an HMAC-signed token encoding userID and expiry.
+// Called from SvelteKit's page load (server-side) to pre-generate the token.
+func MakeToken(key []byte, userID string, ttl time.Duration) string {
 	payload := base64.RawURLEncoding.EncodeToString([]byte(
-		fmt.Sprintf(`{"u":%q,"s":%q,"e":%q,"x":%d}`, userID, securityID, exchangeSegment, time.Now().Add(ttl).Unix()),
+		fmt.Sprintf(`{"u":%q,"x":%d}`, userID, time.Now().Add(ttl).Unix()),
 	))
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(payload))
@@ -53,12 +54,10 @@ func MakeToken(key []byte, userID, securityID, exchangeSegment string, ttl time.
 
 type tokenPayload struct {
 	U string `json:"u"`
-	S string `json:"s"`
-	E string `json:"e"`
 	X int64  `json:"x"`
 }
 
-func validateToken(token string, key []byte) (p tokenPayload, ok bool) {
+func validateToken(token string, key []byte) (userID string, ok bool) {
 	dot := strings.LastIndexByte(token, '.')
 	if dot < 0 {
 		return
@@ -67,8 +66,7 @@ func validateToken(token string, key []byte) (p tokenPayload, ok bool) {
 
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(payload))
-	expected := hex.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(sig), []byte(expected)) {
+	if !hmac.Equal([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(sig)) {
 		return
 	}
 
@@ -76,10 +74,11 @@ func validateToken(token string, key []byte) (p tokenPayload, ok bool) {
 	if err != nil {
 		return
 	}
+	var p tokenPayload
 	if err := json.Unmarshal(raw, &p); err != nil || time.Now().Unix() > p.X {
 		return
 	}
-	return p, true
+	return p.U, true
 }
 
 // parseQuote extracts LTP, LTT, Volume from a Dhan binary quote packet (50 bytes, type=4).
@@ -95,33 +94,22 @@ func parseQuote(b []byte) (ltp float32, ltt uint32, vol uint32, ok bool) {
 	return ltp, ltt, vol, true
 }
 
-// Token issues a short-lived signed token for the given instrument.
-func (h *Handler) Token(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
-	if userID == "" {
+// Live upgrades to WebSocket and proxies Dhan quote ticks to the browser.
+func (h *Handler) Live(w http.ResponseWriter, r *http.Request) {
+	userID, ok := validateToken(r.URL.Query().Get("token"), h.EncryptionKey)
+	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+
 	securityID := r.URL.Query().Get("security_id")
 	exchangeSegment := r.URL.Query().Get("exchange_segment")
 	if securityID == "" || exchangeSegment == "" {
 		http.Error(w, "missing params", http.StatusBadRequest)
 		return
 	}
-	token := MakeToken(h.EncryptionKey, userID, securityID, exchangeSegment, 30*time.Second)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"token": token})
-}
 
-// Live upgrades to WebSocket and proxies Dhan quote ticks to the browser.
-func (h *Handler) Live(w http.ResponseWriter, r *http.Request) {
-	p, ok := validateToken(r.URL.Query().Get("token"), h.EncryptionKey)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	clientID, accessToken, err := broker.GetToken(h.DB, h.EncryptionKey, p.U)
+	clientID, accessToken, err := broker.GetToken(h.DB, h.EncryptionKey, userID)
 	if err == sql.ErrNoRows {
 		http.Error(w, "broker not connected", http.StatusUnauthorized)
 		return
@@ -137,7 +125,7 @@ func (h *Handler) Live(w http.ResponseWriter, r *http.Request) {
 	}
 	defer browserConn.Close()
 
-	dhanSeg, _ := candles.MapSegment(p.E)
+	dhanSeg, _ := candles.MapSegment(exchangeSegment)
 	dhanURL := fmt.Sprintf("%s?version=2&token=%s&clientId=%s&authType=2", dhanFeedURL, accessToken, clientID)
 	dhanConn, _, err := websocket.DefaultDialer.Dial(dhanURL, nil)
 	if err != nil {
@@ -150,29 +138,24 @@ func (h *Handler) Live(w http.ResponseWriter, r *http.Request) {
 	sub, _ := json.Marshal(map[string]any{
 		"RequestCode":     17,
 		"InstrumentCount": 1,
-		"InstrumentList":  []map[string]string{{"ExchangeSegment": dhanSeg, "SecurityId": p.S}},
+		"InstrumentList":  []map[string]string{{"ExchangeSegment": dhanSeg, "SecurityId": securityID}},
 	})
 	if err := dhanConn.WriteMessage(websocket.TextMessage, sub); err != nil {
 		return
 	}
 
-	log.Printf("live: connected to Dhan feed for seg=%s id=%s", dhanSeg, p.S)
+	log.Printf("live: streaming %s/%s for user %s", dhanSeg, securityID, userID)
 
-	// reuse buffer to avoid per-tick allocation
 	buf := make([]byte, 0, 64)
 	for {
-		msgType, msg, err := dhanConn.ReadMessage()
+		_, msg, err := dhanConn.ReadMessage()
 		if err != nil {
-			log.Printf("live: dhan read error: %v", err)
 			return
 		}
-		log.Printf("live: got msg type=%d len=%d first_byte=%d", msgType, len(msg), func() byte { if len(msg) > 0 { return msg[0] }; return 0 }())
 		ltp, ltt, vol, ok := parseQuote(msg)
 		if !ok {
-			log.Printf("live: skipped packet (type=%d len=%d)", msgType, len(msg))
 			continue
 		}
-		log.Printf("live: tick ltp=%.2f ltt=%d vol=%d", ltp, ltt, vol)
 		buf = buf[:0]
 		buf = append(buf, `{"ltp":`...)
 		buf = strconv.AppendFloat(buf, float64(ltp), 'f', 2, 32)
@@ -188,6 +171,5 @@ func (h *Handler) Live(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /chart/live/token", h.Token)
 	mux.HandleFunc("GET /chart/live", h.Live)
 }
