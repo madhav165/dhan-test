@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { enhance } from '$app/forms'
 	import { invalidateAll } from '$app/navigation'
 	import { onDestroy } from 'svelte'
 
@@ -42,6 +43,9 @@
 		{#if strategy.wasm_key}
 			<a href="/strategies/{strategy.id}/run" class="btn-primary">New run</a>
 		{/if}
+		<form method="POST" action="?/delete" use:enhance onsubmit={(e) => { if (!confirm('Delete this strategy and all its runs and policies?')) e.preventDefault() }}>
+			<button type="submit" class="btn-delete">Delete</button>
+		</form>
 	</div>
 </div>
 
@@ -207,6 +211,20 @@
 	}
 
 	.btn-primary:hover { background: var(--accent-hover); }
+
+	.btn-delete {
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		color: var(--text-muted);
+		cursor: pointer;
+		font-family: 'Inter', sans-serif;
+		font-size: 0.875rem;
+		font-weight: 500;
+		padding: 8px 16px;
+	}
+
+	.btn-delete:hover { border-color: var(--red-muted); color: var(--red-muted); }
 
 	.btn-secondary {
 		border: 1px solid var(--border);

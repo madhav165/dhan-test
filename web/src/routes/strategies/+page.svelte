@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { enhance } from '$app/forms'
+
 	let { data } = $props()
 </script>
 
@@ -20,6 +22,10 @@
 					</div>
 					<span class="badge {s.wasm_key ? 'ready' : 'draft'}">{s.wasm_key ? 'WASM ready' : 'No WASM'}</span>
 				</a>
+				<form method="POST" action="?/delete" use:enhance onsubmit={(e) => { if (!confirm('Delete this strategy and all its runs and policies?')) e.preventDefault() }}>
+					<input type="hidden" name="id" value={s.id} />
+					<button type="submit" class="del-btn">✕</button>
+				</form>
 			</li>
 		{/each}
 	</ul>
@@ -67,6 +73,21 @@
 		margin: 0;
 		padding: 0;
 	}
+
+	li { align-items: stretch; display: flex; gap: 6px; }
+	li .strategy-row { flex: 1; }
+
+	.del-btn {
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		color: var(--text-muted);
+		cursor: pointer;
+		font-size: 0.75rem;
+		padding: 0 10px;
+	}
+
+	.del-btn:hover { border-color: var(--red-muted); color: var(--red-muted); }
 
 	.strategy-row {
 		align-items: center;

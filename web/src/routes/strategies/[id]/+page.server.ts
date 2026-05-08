@@ -1,6 +1,6 @@
 import { db } from '$lib/server/db'
-import { error } from '@sveltejs/kit'
-import type { PageServerLoad } from './$types'
+import { error, redirect } from '@sveltejs/kit'
+import type { Actions, PageServerLoad } from './$types'
 
 export const load: PageServerLoad = async ({ locals, params }) => {
 	const stratResult = await db.query(
@@ -49,4 +49,11 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 		runs: runsResult.rows,
 		policies: policiesResult.rows,
 	}
+}
+
+export const actions: Actions = {
+	delete: async ({ locals, params }) => {
+		await db.query(`delete from strategies where id = $1 and user_id = $2`, [params.id, locals.user!.id])
+		redirect(303, '/strategies')
+	},
 }
