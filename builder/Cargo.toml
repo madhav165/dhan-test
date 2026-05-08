@@ -21,3 +21,7 @@ chrono = "0.4"
 rayon = "1"
 arrow = { version = "53", default-features = false, features = ["ipc"] }
 parquet = { version = "53", default-features = false, features = ["arrow"] }
+ndarray = "0.16"
+rand = "0.9"
+rand_distr = "0.5"
+indicators = { path = "../rust/indicators" }
