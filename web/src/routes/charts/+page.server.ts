@@ -55,6 +55,6 @@ export const actions: Actions = {
 		const data = await request.formData()
 		const id = data.get('id') as string
 		await db.query(`delete from charts where id=$1 and user_id=$2`, [id, locals.user!.id])
-		redirect(302, '/charts')
+		return { deleted: true }
 	}
 }
