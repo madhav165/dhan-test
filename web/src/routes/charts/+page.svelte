@@ -103,13 +103,38 @@
 	let suppressScroll = false
 
 	onMount(async () => {
+		const IST_OFFSET = 5.5 * 60 * 60 // +5:30 in seconds
+		const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+		const istDate = (ts: number) => new Date((ts + IST_OFFSET) * 1000)
+		const pad = (n: number) => String(n).padStart(2, '0')
+
+		const fmtIST = (ts: number) => {
+			const d = istDate(ts)
+			const h = d.getUTCHours(), m = d.getUTCMinutes()
+			return h === 0 && m === 0
+				? `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} '${String(d.getUTCFullYear()).slice(2)}`
+				: `${pad(h)}:${pad(m)}`
+		}
+
+		const tickFmtIST = (ts: number, type: number) => {
+			const d = istDate(ts)
+			const Y = d.getUTCFullYear(), M = d.getUTCMonth(), D = d.getUTCDate()
+			const h = d.getUTCHours(), m = d.getUTCMinutes()
+			// TickMarkType: 0=Year 1=Month 2=DayOfMonth 3=Time 4=TimeWithSeconds
+			if (type === 0) return String(Y)
+			if (type === 1) return `${MONTHS[M]} '${String(Y).slice(2)}`
+			if (type === 2) return `${D} ${MONTHS[M]}`
+			return `${pad(h)}:${pad(m)}`
+		}
+
 		chart = createChart(chartContainer, {
 			layout: { background: { type: ColorType.Solid, color: '#0f0f0f' }, textColor: '#aaa' },
 			grid: { vertLines: { color: '#1a1a1a' }, horzLines: { color: '#1a1a1a' } },
 			crosshair: { mode: 1 },
 			width: chartContainer.clientWidth,
 			height: chartContainer.clientHeight,
-			timeScale: { fixLeftEdge: true, fixRightEdge: true, timeVisible: true, secondsVisible: false },
+			timeScale: { fixLeftEdge: true, fixRightEdge: true, timeVisible: true, secondsVisible: false, tickMarkFormatter: tickFmtIST },
+			localization: { timeFormatter: fmtIST },
 		})
 		candleSeries = chart.addSeries(CandlestickSeries, {
 			upColor: '#22c55e', downColor: '#ef4444',
