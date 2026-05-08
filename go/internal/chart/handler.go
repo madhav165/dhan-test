@@ -83,7 +83,7 @@ func (h *Handler) Candles(w http.ResponseWriter, r *http.Request) {
 		log.Printf("chart: fetching candles for %s %s %s %s–%s", securityID, exchangeSegment, interval, fetchFrom, fetchTo)
 		if err := candles.FetchAndStore(h.DB, h.DhanBaseURL, clientID, accessToken, securityID, exchangeSegment, interval, fetchFrom, fetchTo); err != nil {
 			log.Printf("chart: fetch error: %v", err)
-			http.Error(w, "failed to fetch candles: "+err.Error(), http.StatusBadGateway)
+			http.Error(w, "No data available for the selected date range.", http.StatusUnprocessableEntity)
 			return
 		}
 	}
