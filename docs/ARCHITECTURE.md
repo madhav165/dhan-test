@@ -24,20 +24,28 @@ The progression is: write strategy → backtest with a run → deploy as a polic
 Browser  ──▶  SvelteKit (web)  ──▶  Postgres
                     │
                     └──▶  Go service  ──▶  Dhan API
-                                │
+                                │         (historical + live feed)
                                 └──▶  Postgres / MinIO
+                                │
+                                └──▶  Policy worker (on token refresh)
 
-Builder (Rust)  ──▶  Postgres  (polls job queues)
-                └──▶  MinIO    (reads WASM, writes parquet)
+Builder (Rust)   ──▶  Postgres  (polls job queues)
+                 └──▶  MinIO    (reads WASM, writes parquet)
+
+Policy worker    ──▶  Postgres  (reads policies/candles, writes live_signals)
+(Rust)           └──▶  Dhan WebSocket feed  (live ticks)
+                 └──▶  Telegram Bot API     (alerts)
 ```
 
 **SvelteKit** handles all UI and server-side data loading. Forms submit directly to `+page.server.ts` actions which write to Postgres. There is no REST API between the frontend and the database — SvelteKit talks to Postgres directly via the `pg` client.
 
-**Go service** does two things: proxies authenticated Dhan API calls from the browser (live market data), and runs the candle worker that fetches and stores historical data before a backtest. It holds the encryption key for broker tokens and is the only service that talks to the Dhan API directly.
+**Go service** does two things: proxies authenticated Dhan API calls from the browser (live market data), and runs the candle worker that fetches and stores historical data before a backtest. It holds the encryption key for broker tokens and is the only service that talks to the Dhan API directly. After storing a refreshed broker token it notifies the policy worker via a local HTTP call.
 
 **Builder** is a Rust binary that runs as a background container. It polls two job queues in Postgres and processes them one at a time:
 - `build_jobs` — compiles a strategy's Rust source to WebAssembly and stores the `.wasm` in MinIO
 - `run_jobs` — executes a backtest once candle data is ready
+
+**Policy worker** is a Rust binary that executes active policies against live market data and sends alerts. It is triggered by the Go service when a broker token is refreshed, and also runs a 30-second poll loop.
 
 ### Job queues
 
@@ -50,6 +58,22 @@ Both queues are plain Postgres tables polled every 3 seconds. No message broker.
 The Go candle worker owns the `pending → ready` transition. It checks whether the candles table already has data for the requested instruments, interval, and date range. If not, it calls Dhan's historical API and upserts the rows. Once all instruments are covered it marks the job `ready`.
 
 The builder then picks up `ready` jobs, reads candles from Postgres, loads the compiled WASM from MinIO, and executes it via wasmtime.
+
+### Policy execution
+
+When a user refreshes their broker token the Go service immediately calls `POST /internal/user-connected` on the policy worker. The worker then:
+
+1. Refreshes candles for every instrument in the user's active policies (from the last stored date to today, update-on-conflict)
+2. Runs all daily-interval policies immediately — loads close history from Postgres into a fresh WASM instance, calls `run()`, and fires an alert if the signal has changed
+3. If the call arrives during market hours (09:15–15:30 IST), spins up intraday runners as well
+
+If the user connects before market opens (e.g. 8 AM), intraday runners are not started. The 30-second poll loop handles this: once 09:15 arrives it checks whether each user with a valid token and active intraday policies already has runners — if not, it starts them.
+
+**Intraday execution** opens one Dhan WebSocket connection per user, subscribed to the union of instruments across all that user's active intraday policies (up to 5000 instruments per connection; Dhan allows 5 concurrent connections per user). For each `(policy, instrument)` pair the worker holds a persistent wasmtime `Store` + `Instance`. On every tick only the last float in WASM memory is updated (the live LTP); the historical close buffer written at startup stays in place. `run()` is called on every tick and a signal transition triggers a write to `live_signals` and a Telegram message.
+
+Intraday runners stop when the WebSocket closes (market close, token expiry, or disconnect). The user's entry is removed from the in-memory active set so the poll loop can restart them if the connection drops and reconnects within market hours.
+
+**Alert delivery** writes a row to `live_signals` (policy, instrument, signal, price, timestamp) and calls the Telegram Bot API with the user's configured `telegram_chat_id`. The policy worker talks to Telegram directly — the Go service is not involved in the signal path.
 
 ### Strategy compilation
 
@@ -72,6 +96,8 @@ Results are written as a Parquet file to MinIO (`runs/{run_id}/result.parquet`) 
 ### Market data
 
 Historical candles are stored in a shared `candles` table keyed on `(security_id, exchange_segment, interval, timestamp)`. If two runs request the same instrument and date range, the data is fetched once and reused. Intraday data from Dhan has a 90-day per-request limit; the Go worker paginates automatically.
+
+When a chart is opened the Go service checks whether the requested `to` date is today. If so, it fetches from the last stored candle date forward (not just today) so that gaps caused by multi-day absences are filled. The same refresh-from-last-stored-date logic is used by the policy worker before running any policy.
 
 The instrument master (235k rows covering NSE equities, BSE equities, and NSE indices) is synced from Dhan's scrip master CSV at 9 AM IST daily. The UI search queries this table with a prefix-first ordering.
 
