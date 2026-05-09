@@ -620,7 +620,7 @@
 			{:else}
 				<input class="chart-name" bind:value={chartName} placeholder="Chart name" />
 				<form method="POST" action="?/save" use:enhance={({ formData }) => {
-					formData.set('indicators', JSON.stringify(indicators))
+					formData.set('indicators', JSON.stringify($state.snapshot(indicators)))
 					if (chartId) formData.set('id', chartId)
 					return async ({ result, update }) => {
 						if (result.type === 'success' && result.data?.id) chartId = result.data.id as string
