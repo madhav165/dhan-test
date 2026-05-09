@@ -2,9 +2,9 @@ use ndarray::Array2;
 use crate::rl::train::MLP;
 
 fn dominant_logit(net: &MLP, x: &[f64]) -> f64 {
-    let lg = net.logits(x);
-    // use the buy-logit as the signal strength (positive = bullish bias)
-    lg[1] - lg[0]
+    let (_, _, probs) = net.forward_full(x);
+    // buy prob minus hold prob as signal strength
+    probs[1] - probs[0]
 }
 
 pub fn feature_importance(net: &MLP, states: &Array2<f64>) -> Vec<f64> {

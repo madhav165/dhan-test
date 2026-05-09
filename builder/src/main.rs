@@ -674,7 +674,6 @@ async fn process_rl_job(
         episode_steps: states.nrows().min(200),
         lr: 3e-4,
         gamma: 0.99,
-        clip_eps: 0.2,
         allow_short,
         reward_type,
         penalty_holding_days: penalty_holding,
