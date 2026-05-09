@@ -1,7 +1,6 @@
 [workspace]
 members = ["indicators",
     "indicators-wasm",
-    "strategies/rsi_crossover",
 ]
 resolver = "2"
 
