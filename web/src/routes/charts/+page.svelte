@@ -451,6 +451,7 @@
 		interval = 'day'
 		indicators = []
 		candles = []
+		renderIndicators()
 		if (chart && candleSeries) {
 			chart.removeSeries(candleSeries)
 			if (volumeSeries) chart.removeSeries(volumeSeries)
