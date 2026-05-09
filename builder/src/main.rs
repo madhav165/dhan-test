@@ -800,31 +800,21 @@ async fn process_rl_job(
         "test_pnl": test_pnl,
     });
 
-    let compile_result = compile_snippet(s3, bucket, &strategy_id.to_string(), &rust_snippet).await;
-    let distil_error = compile_result.as_ref().err().map(|e| {
-        eprintln!("RL distil compile failed for {}: {}", strategy_id, e);
-        e.clone()
-    });
-
-    let rl_summary_with_status = {
-        let mut v = rl_summary.clone();
-        v["distil_snippet"] = serde_json::Value::String(rust_snippet.clone());
-        if let Some(ref err) = distil_error {
-            v["distil_compile_error"] = serde_json::Value::String(err.clone());
-        }
-        v
-    };
-
     db.execute(
         "update strategies set rl_summary=$1 where id=$2",
-        &[&rl_summary_with_status, &strategy_id],
+        &[&rl_summary, &strategy_id],
     ).await.map_err(|e| e.to_string())?;
 
-    if let Ok(wasm_key) = compile_result {
-        db.execute(
-            "update strategies set wasm_key=$1 where id=$2",
-            &[&wasm_key, &strategy_id],
-        ).await.map_err(|e| e.to_string())?;
+    match compile_snippet(s3, bucket, &strategy_id.to_string(), &rust_snippet).await {
+        Ok(wasm_key) => {
+            db.execute(
+                "update strategies set wasm_key=$1 where id=$2",
+                &[&wasm_key, &strategy_id],
+            ).await.map_err(|e| e.to_string())?;
+        }
+        Err(e) => {
+            eprintln!("RL distil compile failed (strategy still trained): {}", e);
+        }
     }
 
     db.execute(
