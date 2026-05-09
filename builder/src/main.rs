@@ -1,7 +1,7 @@
 mod rl;
-use rl::features::{Candles, IndicatorSpec, compute_indicators, build_state_matrix, normalise};
-use rl::train::{TrainConfig, train as rl_train, weights_to_bytes, evaluate as rl_evaluate};
-use rl::distill::{feature_importance, normalise_importance, distil};
+use rl::features::{Candles, IndicatorSpec, compute_indicators, build_state_matrix, normalise_with_stats};
+use rl::train::{TrainConfig, train as rl_train, weights_to_bytes};
+use rl::distill::{feature_importance, normalise_importance, distil, distil_to_rust};
 
 use std::env;
 use std::fs;
@@ -582,6 +582,53 @@ indicators = {{ path = "/app/indicators" }}
     Ok((source_key, wasm_key))
 }
 
+async fn compile_snippet(
+    s3: &S3Client,
+    bucket: &str,
+    strategy_id: &str,
+    snippet: &str,
+) -> Result<String, String> {
+    let tmp_id = uuid::Uuid::new_v4().to_string();
+    let dir = format!("/tmp/strategy_{}", tmp_id);
+    fs::create_dir_all(format!("{}/src", dir)).map_err(|e| e.to_string())?;
+
+    fs::write(format!("{}/Cargo.toml", dir), format!(r#"
+[package]
+name = "strategy"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+indicators = {{ path = "/app/indicators" }}
+"#)).map_err(|e| e.to_string())?;
+
+    let source = wrap_snippet(snippet);
+    fs::write(format!("{}/src/lib.rs", dir), &source).map_err(|e| e.to_string())?;
+
+    let output = Command::new("cargo")
+        .args(["build", "--release", "--target", "wasm32-unknown-unknown"])
+        .current_dir(&dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr).to_string();
+        fs::remove_dir_all(&dir).ok();
+        return Err(err);
+    }
+
+    let wasm_path = format!("{}/target/wasm32-unknown-unknown/release/strategy.wasm", dir);
+    let wasm = fs::read(&wasm_path).map_err(|e| e.to_string())?;
+    let wasm_key = format!("strategies/{}/strategy.wasm", strategy_id);
+    upload(s3, bucket, &wasm_key, wasm).await?;
+
+    fs::remove_dir_all(&dir).ok();
+    Ok(wasm_key)
+}
+
 async fn process_rl_job(
     db: &tokio_postgres::Client,
     s3: &S3Client,
@@ -695,7 +742,7 @@ async fn process_rl_job(
 
     let indicator_series = compute_indicators(&train_candles, &indicator_specs);
     let (mut states, feature_names) = build_state_matrix(&train_candles, &indicator_series, lookback);
-    normalise(&mut states);
+    let (means, stds) = normalise_with_stats(&mut states);
 
     let cfg = TrainConfig {
         max_episodes: 500,
@@ -723,7 +770,7 @@ async fn process_rl_job(
             let test_candles = to_candles(test_rows);
             let test_ind = compute_indicators(&test_candles, &indicator_specs);
             let (mut test_states, _) = build_state_matrix(&test_candles, &test_ind, lookback);
-            normalise(&mut test_states);
+            normalise_with_stats(&mut test_states);
             if test_states.nrows() > 0 {
                 Some(rl::train::evaluate(&result.net, &test_states, &test_candles.closes, lookback, allow_short, &charges))
             } else { None }
@@ -739,6 +786,11 @@ async fn process_rl_job(
 
     let approx_rules = distil(&result.net, &states, &feature_names, 3);
 
+    let rust_snippet = distil_to_rust(
+        &result.net, &states, &feature_names, &indicator_specs,
+        lookback, &means, &stds, 3,
+    );
+
     let rl_summary = serde_json::json!({
         "feature_importance": feature_importance_json,
         "approximate_rules": approx_rules,
@@ -752,6 +804,18 @@ async fn process_rl_job(
         "update strategies set rl_summary=$1 where id=$2",
         &[&rl_summary, &strategy_id],
     ).await.map_err(|e| e.to_string())?;
+
+    match compile_snippet(s3, bucket, &strategy_id.to_string(), &rust_snippet).await {
+        Ok(wasm_key) => {
+            db.execute(
+                "update strategies set wasm_key=$1 where id=$2",
+                &[&wasm_key, &strategy_id],
+            ).await.map_err(|e| e.to_string())?;
+        }
+        Err(e) => {
+            eprintln!("RL distil compile failed (strategy still trained): {}", e);
+        }
+    }
 
     db.execute(
         "update rl_jobs set status='done', updated_at=now() where id=$1",

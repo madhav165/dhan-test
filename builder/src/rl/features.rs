@@ -133,15 +133,20 @@ pub fn build_state_matrix(
     (mat, feature_names)
 }
 
-pub fn normalise(mat: &mut Array2<f64>) {
+pub fn normalise_with_stats(mat: &mut Array2<f64>) -> (Vec<f64>, Vec<f64>) {
     let ncols = mat.ncols();
+    let mut means = vec![0.0f64; ncols];
+    let mut stds = vec![1.0f64; ncols];
     for j in 0..ncols {
         let col: Vec<f64> = mat.column(j).to_vec();
         let mean = col.iter().sum::<f64>() / col.len() as f64;
         let std = (col.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / col.len() as f64).sqrt();
         let std = if std < 1e-8 { 1.0 } else { std };
+        means[j] = mean;
+        stds[j] = std;
         for v in mat.column_mut(j).iter_mut() {
             *v = (*v - mean) / std;
         }
     }
+    (means, stds)
 }
