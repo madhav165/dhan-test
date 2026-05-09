@@ -152,12 +152,12 @@ fn indicator_vec_expr(spec: &IndicatorSpec) -> String {
         IndicatorSpec::Wma { period } => format!("wma(prices, {})", period),
         IndicatorSpec::Vwap => "vwap(prices, volumes)".into(),
         IndicatorSpec::Macd { component, fast, slow, signal_period } => {
-            let pick = match component.as_str() { "signal" => "1", "histogram" => "2", _ => "0" };
-            format!("{{ let t = macd(prices, {}, {}, {}); [t.0, t.1, t.2][{}].clone() }}", fast, slow, signal_period, pick)
+            let pat = match component.as_str() { "signal" => "(_, v, _)", "histogram" => "(_, _, v)", _ => "(v, _, _)" };
+            format!("{{ let {} = macd(prices, {}, {}, {}); v }}", pat, fast, slow, signal_period)
         }
         IndicatorSpec::Bb { component, period } => {
-            let pick = match component.as_str() { "middle" => "1", "lower" => "2", _ => "0" };
-            format!("{{ let t = bb(prices, {}); [t.0, t.1, t.2][{}].clone() }}", period, pick)
+            let pat = match component.as_str() { "middle" => "(_, v, _)", "lower" => "(_, _, v)", _ => "(v, _, _)" };
+            format!("{{ let {} = bb(prices, {}); v }}", pat, period)
         }
         IndicatorSpec::Atr { period } => format!("atr(highs, lows, prices, {})", period),
         IndicatorSpec::Stoch { period } => format!("stoch(highs, lows, prices, {})", period),
