@@ -552,7 +552,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-indicators = {{ path = "/app/indicators" }}
+indicators = {{ path = "/rust/indicators" }}
 "#)).map_err(|e| e.to_string())?;
 
     let source = wrap_snippet(snippet);
@@ -602,7 +602,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-indicators = {{ path = "/app/indicators" }}
+indicators = {{ path = "/rust/indicators" }}
 "#)).map_err(|e| e.to_string())?;
 
     let source = wrap_snippet(snippet);
