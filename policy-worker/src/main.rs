@@ -51,7 +51,7 @@ struct WasmRunner {
 }
 
 impl WasmRunner {
-    fn new(engine: &WasmEngine, wasm: &[u8], closes: &[f64], volumes: &[f64]) -> Result<Self, String> {
+    fn new(engine: &WasmEngine, wasm: &[u8], candles: &Candles) -> Result<Self, String> {
         let module = Module::new(engine, wasm).map_err(|e| e.to_string())?;
         let linker: Linker<()> = Linker::new(engine);
         let mut store: Store<()> = Store::new(engine, ());
@@ -63,56 +63,62 @@ impl WasmRunner {
             .map_err(|e| e.to_string())?;
 
         // allocate history + 1 live slot
-        let total = (closes.len() + 1) as u32;
+        let n = candles.closes.len();
+        let total = (n + 1) as u32;
         let ptr = alloc_fn.call(&mut store, total).map_err(|e| e.to_string())?;
         {
             let data = memory.data_mut(&mut store);
-            for (i, &v) in closes.iter().enumerate() {
+            for (i, &v) in candles.closes.iter().enumerate() {
                 let off = ptr as usize + i * 8;
                 data[off..off + 8].copy_from_slice(&v.to_le_bytes());
             }
         }
 
-        if let Ok(alloc_vol_fn) = instance.get_typed_func::<u32, u32>(&mut store, "alloc_volume") {
-            if let Ok(vol_ptr) = alloc_vol_fn.call(&mut store, total) {
-                let data = memory.data_mut(&mut store);
-                for (i, &v) in volumes.iter().take(closes.len()).enumerate() {
-                    let off = vol_ptr as usize + i * 8;
-                    data[off..off + 8].copy_from_slice(&v.to_le_bytes());
+        for (export, slice) in [
+            ("alloc_volume", candles.volumes.as_slice()),
+            ("alloc_high",   candles.highs.as_slice()),
+            ("alloc_low",    candles.lows.as_slice()),
+        ] {
+            if let Ok(f) = instance.get_typed_func::<u32, u32>(&mut store, export) {
+                if let Ok(ptr) = f.call(&mut store, total) {
+                    let data = memory.data_mut(&mut store);
+                    for (i, &v) in slice.iter().take(n).enumerate() {
+                        let off = ptr as usize + i * 8;
+                        data[off..off + 8].copy_from_slice(&v.to_le_bytes());
+                    }
                 }
             }
         }
 
-        Ok(Self { store, instance, history_len: closes.len(), last_signal: 0 })
+        Ok(Self { store, instance, history_len: n, last_signal: 0 })
     }
 
-    /// Update the live price+volume slot and run signal. Returns Some(signal) on transition.
-    fn tick(&mut self, ltp: f64, vol: f64) -> Result<Option<u8>, String> {
+    /// Update the live price+volume+high+low slot and run signal. Returns Some(signal) on transition.
+    fn tick(&mut self, ltp: f64, vol: f64, high: f64, low: f64) -> Result<Option<u8>, String> {
         let memory = self.instance.get_memory(&mut self.store, "memory")
             .ok_or("no memory")?;
         let alloc_fn = self.instance.get_typed_func::<u32, u32>(&mut self.store, "alloc")
             .map_err(|e| e.to_string())?;
 
-        // get ptr (alloc was already called; we stored into it — re-read by calling again with same len)
-        // Actually we need to store the ptr. Let's recalculate via a fresh alloc call with same size.
-        // Simpler: keep ptr in struct. Let's refactor to store ptr.
-        // For now call run with total len.
         let total = (self.history_len + 1) as u32;
+        let slot = self.history_len;
 
         // Write LTP into last slot
         let ptr = alloc_fn.call(&mut self.store, total).map_err(|e| e.to_string())?;
         {
             let data = memory.data_mut(&mut self.store);
-            let off = ptr as usize + self.history_len * 8;
+            let off = ptr as usize + slot * 8;
             data[off..off + 8].copy_from_slice(&ltp.to_le_bytes());
         }
 
-        // Write volume into last slot if alloc_volume exists
-        if let Ok(alloc_vol_fn) = self.instance.get_typed_func::<u32, u32>(&mut self.store, "alloc_volume") {
-            if let Ok(vol_ptr) = alloc_vol_fn.call(&mut self.store, total) {
-                let data = memory.data_mut(&mut self.store);
-                let off = vol_ptr as usize + self.history_len * 8;
-                data[off..off + 8].copy_from_slice(&vol.to_le_bytes());
+        // Write live values into optional slots
+        for (export, val) in [("alloc_volume", vol), ("alloc_high", high), ("alloc_low", low)] {
+            if let Ok(f) = self.instance.get_typed_func::<u32, u32>(&mut self.store, export) {
+                if let Ok(p) = f.call(&mut self.store, total) {
+                    let data = memory.data_mut(&mut self.store);
+                    let off = p as usize + slot * 8;
+                    data[off..off + 8].copy_from_slice(&val.to_le_bytes());
+                }
             }
         }
 
@@ -250,21 +256,31 @@ async fn load_active_policies(db: &tokio_postgres::Client, enc_key: &[u8]) -> Ve
     user_map.into_values().collect()
 }
 
+struct Candles {
+    closes: Vec<f64>,
+    volumes: Vec<f64>,
+    highs: Vec<f64>,
+    lows: Vec<f64>,
+}
+
 async fn fetch_candles(
     db: &tokio_postgres::Client,
     security_id: &str,
     exchange_segment: &str,
     interval: &str,
-) -> (Vec<f64>, Vec<f64>) {
+) -> Candles {
     let rows = db.query(
-        "select close::float8, volume::float8 from candles
+        "select close::float8, volume::float8, high::float8, low::float8 from candles
          where security_id=$1 and exchange_segment=$2 and interval=$3
          order by timestamp",
         &[&security_id, &exchange_segment, &interval],
     ).await.unwrap_or_default();
-    let closes = rows.iter().map(|r| r.get::<_, f64>(0)).collect();
-    let volumes = rows.iter().map(|r| r.get::<_, f64>(1)).collect();
-    (closes, volumes)
+    Candles {
+        closes:  rows.iter().map(|r| r.get::<_, f64>(0)).collect(),
+        volumes: rows.iter().map(|r| r.get::<_, f64>(1)).collect(),
+        highs:   rows.iter().map(|r| r.get::<_, f64>(2)).collect(),
+        lows:    rows.iter().map(|r| r.get::<_, f64>(3)).collect(),
+    }
 }
 
 async fn refresh_candles(
@@ -541,20 +557,20 @@ async fn run_daily_policy(state: &Arc<AppState>, user_ctx: &UserCtx, policy: &Po
             &instrument.security_id, &instrument.exchange_segment, &policy.interval,
         ).await;
 
-        let (closes, volumes) = fetch_candles(
+        let candles = fetch_candles(
             &state.db, &instrument.security_id, &instrument.exchange_segment, &policy.interval,
         ).await;
 
-        if closes.is_empty() { continue; }
+        if candles.closes.is_empty() { continue; }
 
-        let mut runner = match WasmRunner::new(&state.wasm_engine, &wasm, &closes, &volumes) {
+        let mut runner = match WasmRunner::new(&state.wasm_engine, &wasm, &candles) {
             Ok(r) => r,
             Err(e) => { eprintln!("wasm init: {e}"); continue; }
         };
 
         match runner.run_once() {
             Ok(Some(signal)) => {
-                let price = closes.last().copied().unwrap_or(0.0);
+                let price = candles.closes.last().copied().unwrap_or(0.0);
                 record_signal(
                     &state.db, &state.telegram_bot_token,
                     policy, instrument, signal, price,
@@ -605,13 +621,13 @@ async fn run_intraday_policies(
                 &instrument.security_id, &instrument.exchange_segment, &policy.interval,
             ).await;
 
-            let (closes, volumes) = fetch_candles(
+            let candles = fetch_candles(
                 &state.db, &instrument.security_id, &instrument.exchange_segment, &policy.interval,
             ).await;
 
-            if closes.is_empty() { continue; }
+            if candles.closes.is_empty() { continue; }
 
-            let runner = match WasmRunner::new(&state.wasm_engine, &wasm, &closes, &volumes) {
+            let runner = match WasmRunner::new(&state.wasm_engine, &wasm, &candles) {
                 Ok(r) => r,
                 Err(e) => { eprintln!("wasm init: {e}"); continue; }
             };
@@ -684,7 +700,7 @@ async fn run_intraday_policies(
                         .find(|i| i.security_id == sec_id)
                         .unwrap();
 
-                    match runner.tick(ltp, vol) {
+                    match runner.tick(ltp, vol, ltp, ltp) {
                         Ok(Some(signal)) => {
                             record_signal(
                                 &state.db, &state.telegram_bot_token,

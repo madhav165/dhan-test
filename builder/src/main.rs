@@ -23,17 +23,30 @@ use std::cell::UnsafeCell;
 use indicators::rsi::rsi;
 use indicators::sma::sma;
 use indicators::ema::ema;
+use indicators::wma::wma;
 use indicators::macd::macd;
 use indicators::bb::bb;
 use indicators::vwap::vwap;
+use indicators::atr::atr;
+use indicators::stoch::stoch;
+use indicators::obv::obv;
+use indicators::cci::cci;
 
-struct State { prices: Vec<f64>, volumes: Vec<f64>, signals: Vec<u8> }
+struct State {
+    prices: Vec<f64>,
+    volumes: Vec<f64>,
+    highs: Vec<f64>,
+    lows: Vec<f64>,
+    signals: Vec<u8>,
+}
 struct WasmState(UnsafeCell<State>);
 unsafe impl Sync for WasmState {}
 
 static STATE: WasmState = WasmState(UnsafeCell::new(State {
     prices: Vec::new(),
     volumes: Vec::new(),
+    highs: Vec::new(),
+    lows: Vec::new(),
     signals: Vec::new(),
 }));
 
@@ -52,21 +65,36 @@ pub extern "C" fn alloc_volume(len: u32) -> *mut f64 {
 }
 
 #[no_mangle]
+pub extern "C" fn alloc_high(len: u32) -> *mut f64 {
+    let s = unsafe { &mut *STATE.0.get() };
+    s.highs = vec![0.0; len as usize];
+    s.highs.as_mut_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn alloc_low(len: u32) -> *mut f64 {
+    let s = unsafe { &mut *STATE.0.get() };
+    s.lows = vec![0.0; len as usize];
+    s.lows.as_mut_ptr()
+}
+
+#[no_mangle]
 pub extern "C" fn run(len: u32) -> *mut u8 {
     let s = unsafe { &mut *STATE.0.get() };
     let n = len as usize;
     s.signals = vec![0u8; n];
     if n < 2 { return s.signals.as_mut_ptr(); }
     let prices = &s.prices[..n];
-    let vol_len = s.volumes.len().min(n);
-    let volumes = &s.volumes[..vol_len];
+    let volumes = &s.volumes[..s.volumes.len().min(n)];
+    let highs = &s.highs[..s.highs.len().min(n)];
+    let lows = &s.lows[..s.lows.len().min(n)];
     for i in 1..n {
-        s.signals[i] = signal(prices, volumes, i) as u8;
+        s.signals[i] = signal(prices, volumes, highs, lows, i) as u8;
     }
     s.signals.as_mut_ptr()
 }
 
-fn signal(prices: &[f64], volumes: &[f64], i: usize) -> u8 {
+fn signal(prices: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64], i: usize) -> u8 {
     // USER CODE
 }
 "#;
