@@ -9,12 +9,13 @@
 	type Instrument = { security_id: string; exchange_segment: string; trading_symbol: string; custom_symbol: string }
 	let instrument = $state<Instrument | null>(null)
 
-	const indicatorNames = ['rsi', 'sma', 'ema', 'vwap', 'macd', 'bb'] as const
+	const indicatorNames = ['rsi', 'sma', 'ema', 'wma', 'vwap', 'macd', 'bb', 'atr', 'stoch', 'obv', 'cci'] as const
 
 	function defaultIndicator(name: string): Indicator {
 		if (name === 'macd') return { name: 'macd', component: 'macd', fast: 12, slow: 26, signal_period: 9 }
 		if (name === 'bb') return { name: 'bb', component: 'upper', period: 20 }
 		if (name === 'vwap') return { name: 'vwap' }
+		if (name === 'obv') return { name: 'obv' }
 		return { name: name as any, period: 14 }
 	}
 

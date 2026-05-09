@@ -1,8 +1,8 @@
 export type RawInput = { kind: 'price' } | { kind: 'volume' }
 
 export type Indicator =
-	| { name: 'rsi' | 'sma' | 'ema'; period: number }
-	| { name: 'vwap' }
+	| { name: 'rsi' | 'sma' | 'ema' | 'wma' | 'atr' | 'stoch' | 'cci'; period: number }
+	| { name: 'vwap' | 'obv' }
 	| { name: 'macd'; component: 'macd' | 'signal' | 'histogram'; fast: number; slow: number; signal_period: number }
 	| { name: 'bb'; component: 'upper' | 'middle' | 'lower'; period: number }
 
@@ -38,7 +38,7 @@ export function emptyCondition(id: string): Condition {
 	return {
 		type: 'condition',
 		id,
-		left: { kind: 'indicator', indicator: { name: 'rsi', period: 14 } },
+		left: { kind: 'indicator', indicator: { name: 'rsi' as const, period: 14 } },
 		operator: '<',
 		right: { kind: 'number', value: 30 },
 	}

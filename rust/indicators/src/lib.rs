@@ -4,3 +4,8 @@ pub mod ema;
 pub mod macd;
 pub mod bb;
 pub mod vwap;
+pub mod wma;
+pub mod atr;
+pub mod stoch;
+pub mod obv;
+pub mod cci;

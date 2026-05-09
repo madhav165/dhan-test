@@ -8,7 +8,7 @@
 	} = $props()
 
 	const rawInputs = ['price', 'volume'] as const
-	const indicatorNames = ['rsi', 'sma', 'ema', 'vwap', 'macd', 'bb'] as const
+	const indicatorNames = ['rsi', 'sma', 'ema', 'wma', 'vwap', 'macd', 'bb', 'atr', 'stoch', 'obv', 'cci'] as const
 	const operators: Operator[] = ['>', '<', '>=', '<=', '==', 'crosses_above', 'crosses_below']
 	const macdComponents = ['macd', 'signal', 'histogram'] as const
 	const bbComponents = ['upper', 'middle', 'lower'] as const
@@ -23,6 +23,7 @@
 		if (name === 'macd') return { name: 'macd', component: 'macd', fast: 12, slow: 26, signal_period: 9 }
 		if (name === 'bb') return { name: 'bb', component: 'upper', period: 20 }
 		if (name === 'vwap') return { name: 'vwap' }
+		if (name === 'obv') return { name: 'obv' }
 		return { name: name as any, period: 14 }
 	}
 
@@ -73,7 +74,7 @@
 			</select>
 			<input type="number" value={condition.left.indicator.period} min="1" class="num-sm"
 				oninput={(e) => patchIndicator('left', { period: +(e.target as HTMLInputElement).value })} />
-		{:else if condition.left.indicator.name !== 'vwap'}
+		{:else if condition.left.indicator.name !== 'vwap' && condition.left.indicator.name !== 'obv'}
 			<input type="number" value={condition.left.indicator.period} min="1" class="num-sm"
 				oninput={(e) => patchIndicator('left', { period: +(e.target as HTMLInputElement).value })} />
 		{/if}
@@ -119,7 +120,7 @@
 			</select>
 			<input type="number" value={condition.right.indicator.period} min="1" class="num-sm"
 				oninput={(e) => patchIndicator('right', { period: +(e.target as HTMLInputElement).value })} />
-		{:else if condition.right.indicator.name !== 'vwap'}
+		{:else if condition.right.indicator.name !== 'vwap' && condition.right.indicator.name !== 'obv'}
 			<input type="number" value={condition.right.indicator.period} min="1" class="num-sm"
 				oninput={(e) => patchIndicator('right', { period: +(e.target as HTMLInputElement).value })} />
 		{/if}

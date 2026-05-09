@@ -5,10 +5,15 @@ interface IndicatorsWasm {
 	dealloc_f64: (ptr: number, len: number) => void
 	sma_run: IndicatorFn
 	ema_run: IndicatorFn
+	wma_run: IndicatorFn
 	rsi_run: IndicatorFn
 	macd_run: (ptr: number, len: number, fast: number, slow: number, signal: number) => number
 	bb_run: (ptr: number, len: number, period: number) => number
 	vwap_run: (price_ptr: number, vol_ptr: number, len: number) => number
+	atr_run: (high_ptr: number, low_ptr: number, close_ptr: number, len: number, period: number) => number
+	stoch_run: (high_ptr: number, low_ptr: number, close_ptr: number, len: number, period: number) => number
+	obv_run: (close_ptr: number, vol_ptr: number, len: number) => number
+	cci_run: (high_ptr: number, low_ptr: number, close_ptr: number, len: number, period: number) => number
 	memory: WebAssembly.Memory
 }
 
@@ -87,5 +92,49 @@ export function runVwap(
 	const out = Array.from(new Float64Array(wasm.memory.buffer, outPtr, n))
 	wasm.dealloc_f64(pricePtr, n)
 	wasm.dealloc_f64(volPtr, n)
+	return out
+}
+
+function allocHLC(wasm: IndicatorsWasm, highs: number[], lows: number[], closes: number[]) {
+	const n = highs.length
+	const hp = wasm.alloc_f64(n), lp = wasm.alloc_f64(n), cp = wasm.alloc_f64(n)
+	new Float64Array(wasm.memory.buffer, hp, n).set(highs)
+	new Float64Array(wasm.memory.buffer, lp, n).set(lows)
+	new Float64Array(wasm.memory.buffer, cp, n).set(closes)
+	return { n, hp, lp, cp }
+}
+
+export function runAtr(wasm: IndicatorsWasm, highs: number[], lows: number[], closes: number[], period: number): number[] {
+	const { n, hp, lp, cp } = allocHLC(wasm, highs, lows, closes)
+	const outPtr = wasm.atr_run(hp, lp, cp, n, period)
+	const out = Array.from(new Float64Array(wasm.memory.buffer, outPtr, n))
+	wasm.dealloc_f64(hp, n); wasm.dealloc_f64(lp, n); wasm.dealloc_f64(cp, n)
+	return out
+}
+
+export function runStoch(wasm: IndicatorsWasm, highs: number[], lows: number[], closes: number[], period: number): number[] {
+	const { n, hp, lp, cp } = allocHLC(wasm, highs, lows, closes)
+	const outPtr = wasm.stoch_run(hp, lp, cp, n, period)
+	const out = Array.from(new Float64Array(wasm.memory.buffer, outPtr, n))
+	wasm.dealloc_f64(hp, n); wasm.dealloc_f64(lp, n); wasm.dealloc_f64(cp, n)
+	return out
+}
+
+export function runObv(wasm: IndicatorsWasm, closes: number[], volumes: number[]): number[] {
+	const n = closes.length
+	const cp = wasm.alloc_f64(n), vp = wasm.alloc_f64(n)
+	new Float64Array(wasm.memory.buffer, cp, n).set(closes)
+	new Float64Array(wasm.memory.buffer, vp, n).set(volumes)
+	const outPtr = wasm.obv_run(cp, vp, n)
+	const out = Array.from(new Float64Array(wasm.memory.buffer, outPtr, n))
+	wasm.dealloc_f64(cp, n); wasm.dealloc_f64(vp, n)
+	return out
+}
+
+export function runCci(wasm: IndicatorsWasm, highs: number[], lows: number[], closes: number[], period: number): number[] {
+	const { n, hp, lp, cp } = allocHLC(wasm, highs, lows, closes)
+	const outPtr = wasm.cci_run(hp, lp, cp, n, period)
+	const out = Array.from(new Float64Array(wasm.memory.buffer, outPtr, n))
+	wasm.dealloc_f64(hp, n); wasm.dealloc_f64(lp, n); wasm.dealloc_f64(cp, n)
 	return out
 }

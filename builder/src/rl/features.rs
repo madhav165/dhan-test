@@ -14,9 +14,14 @@ pub enum IndicatorSpec {
     Rsi { period: usize },
     Sma { period: usize },
     Ema { period: usize },
+    Wma { period: usize },
     Vwap,
     Macd { component: String, fast: usize, slow: usize, signal_period: usize },
     Bb { component: String, period: usize },
+    Atr { period: usize },
+    Stoch { period: usize },
+    Obv,
+    Cci { period: usize },
 }
 
 impl IndicatorSpec {
@@ -25,22 +30,31 @@ impl IndicatorSpec {
             Self::Rsi { period } => format!("rsi_{}", period),
             Self::Sma { period } => format!("sma_{}", period),
             Self::Ema { period } => format!("ema_{}", period),
+            Self::Wma { period } => format!("wma_{}", period),
             Self::Vwap => "vwap".into(),
             Self::Macd { component, fast, slow, signal_period } =>
                 format!("macd_{}_{}_{}_{}",fast, slow, signal_period, component),
             Self::Bb { component, period } => format!("bb_{}_{}", period, component),
+            Self::Atr { period } => format!("atr_{}", period),
+            Self::Stoch { period } => format!("stoch_{}", period),
+            Self::Obv => "obv".into(),
+            Self::Cci { period } => format!("cci_{}", period),
         }
     }
 }
 
 pub fn compute_indicators(candles: &Candles, specs: &[IndicatorSpec]) -> Vec<(String, Vec<f64>)> {
-    use indicators::{rsi::rsi, sma::sma, ema::ema, vwap::vwap, macd::macd, bb::bb};
+    use indicators::{
+        rsi::rsi, sma::sma, ema::ema, wma::wma, vwap::vwap, macd::macd, bb::bb,
+        atr::atr, stoch::stoch, obv::obv, cci::cci,
+    };
     let mut out = vec![];
     for spec in specs {
         let series: Vec<f64> = match spec {
             IndicatorSpec::Rsi { period } => rsi(&candles.closes, *period),
             IndicatorSpec::Sma { period } => sma(&candles.closes, *period),
             IndicatorSpec::Ema { period } => ema(&candles.closes, *period),
+            IndicatorSpec::Wma { period } => wma(&candles.closes, *period),
             IndicatorSpec::Vwap => vwap(&candles.closes, &candles.volumes),
             IndicatorSpec::Macd { component, fast, slow, signal_period } => {
                 let (m, s, h) = macd(&candles.closes, *fast, *slow, *signal_period);
@@ -58,6 +72,10 @@ pub fn compute_indicators(candles: &Candles, specs: &[IndicatorSpec]) -> Vec<(St
                     _ => u,
                 }
             },
+            IndicatorSpec::Atr { period } => atr(&candles.highs, &candles.lows, &candles.closes, *period),
+            IndicatorSpec::Stoch { period } => stoch(&candles.highs, &candles.lows, &candles.closes, *period),
+            IndicatorSpec::Obv => obv(&candles.closes, &candles.volumes),
+            IndicatorSpec::Cci { period } => cci(&candles.highs, &candles.lows, &candles.closes, *period),
         };
         out.push((spec.name(), series));
     }

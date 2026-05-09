@@ -1,16 +1,15 @@
-/// Simple Moving Average over a sliding window.
-/// Returns a vec of the same length; first `period-1` values are `f64::NAN`.
+use ta::indicators::SimpleMovingAverage;
+use ta::Next;
+
 pub fn sma(prices: &[f64], period: usize) -> Vec<f64> {
     let n = prices.len();
     let mut out = vec![f64::NAN; n];
-    if period == 0 || period > n {
-        return out;
-    }
-    let mut sum: f64 = prices[..period].iter().sum();
-    out[period - 1] = sum / period as f64;
-    for i in period..n {
-        sum += prices[i] - prices[i - period];
-        out[i] = sum / period as f64;
+    let Ok(mut ind) = SimpleMovingAverage::new(period) else { return out };
+    for (i, &p) in prices.iter().enumerate() {
+        let v = ind.next(p);
+        if i + 1 >= period {
+            out[i] = v;
+        }
     }
     out
 }
