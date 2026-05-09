@@ -407,9 +407,7 @@ pub fn train(
 
         net.apply_adam(&grads, &mut m, &mut v, ep + 1, config.lr);
 
-        if ep % 50 == 0 {
-            eprintln!("rl train: episode {}/{} return={:.4}", ep, config.max_episodes, final_train_reward);
-        }
+        eprintln!("rl train: episode {}/{} return={:.4}", ep, config.max_episodes, final_train_reward);
     }
 
     let val_pnl = if val_states.nrows() > 0 {
