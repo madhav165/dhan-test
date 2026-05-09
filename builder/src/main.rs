@@ -142,7 +142,7 @@ async fn download(s3: &S3Client, bucket: &str, key: &str) -> Result<Vec<u8>, Str
     Ok(bytes.to_vec())
 }
 
-fn run_wasm(wasm: &[u8], closes: &[f64], volumes: &[f64]) -> Result<Vec<u8>, String> {
+fn run_wasm(wasm: &[u8], closes: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64]) -> Result<Vec<u8>, String> {
     use wasmtime::{Engine, Linker, Module, Store};
 
     let engine = Engine::default();
@@ -168,12 +168,14 @@ fn run_wasm(wasm: &[u8], closes: &[f64], volumes: &[f64]) -> Result<Vec<u8>, Str
         }
     }
 
-    if let Ok(alloc_vol_fn) = instance.get_typed_func::<u32, u32>(&mut store, "alloc_volume") {
-        let vol_ptr = alloc_vol_fn.call(&mut store, len).map_err(|e| e.to_string())?;
-        let data = memory.data_mut(&mut store);
-        for (i, &v) in volumes.iter().take(len as usize).enumerate() {
-            let off = vol_ptr as usize + i * 8;
-            data[off..off + 8].copy_from_slice(&v.to_le_bytes());
+    for (export, slice) in [("alloc_volume", volumes), ("alloc_high", highs), ("alloc_low", lows)] {
+        if let Ok(f) = instance.get_typed_func::<u32, u32>(&mut store, export) {
+            let ptr = f.call(&mut store, len).map_err(|e| e.to_string())?;
+            let data = memory.data_mut(&mut store);
+            for (i, &v) in slice.iter().take(len as usize).enumerate() {
+                let off = ptr as usize + i * 8;
+                data[off..off + 8].copy_from_slice(&v.to_le_bytes());
+            }
         }
     }
 
@@ -442,7 +444,7 @@ async fn process_run_job(
         .into_par_iter()
         .map(|ic| {
             let volumes_f64: Vec<f64> = ic.volumes.iter().map(|&v| v as f64).collect();
-            let signals = run_wasm(&wasm, &ic.closes, &volumes_f64)?;
+            let signals = run_wasm(&wasm, &ic.closes, &volumes_f64, &ic.highs, &ic.lows)?;
             let metrics = compute_metrics(&ic.closes, &signals, &charges.clone());
             Ok(InstResult {
                 security_id: ic.security_id,
