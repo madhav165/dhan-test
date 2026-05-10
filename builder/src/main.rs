@@ -99,13 +99,37 @@ pub extern "C" fn run(len: u32) -> *mut u8 {
     let volumes = &s.volumes[..s.volumes.len().min(n)];
     let highs = &s.highs[..s.highs.len().min(n)];
     let lows = &s.lows[..s.lows.len().min(n)];
+    let mut position: i8 = 0;
+    let mut entry_price = 0.0_f64;
+    let mut holding = 0_usize;
     for i in 1..n {
-        s.signals[i] = signal(prices, opens, volumes, highs, lows, i) as u8;
+        let price = prices[i];
+        let unrealized_pnl = match position {
+            1 => price - entry_price,
+            -1 => entry_price - price,
+            _ => 0.0,
+        };
+        let sig = signal(prices, opens, volumes, highs, lows, i, position, holding, unrealized_pnl) as u8;
+        s.signals[i] = sig;
+        match (position, sig) {
+            (0, 1) => { position = 1; entry_price = price; holding = 0; }
+            (0, 2) => { position = -1; entry_price = price; holding = 0; }
+            (1, 0) | (1, 2) => {
+                position = 0; holding = 0;
+                if sig == 2 { position = -1; entry_price = price; }
+            }
+            (-1, 0) | (-1, 1) => {
+                position = 0; holding = 0;
+                if sig == 1 { position = 1; entry_price = price; }
+            }
+            _ => {}
+        }
+        if position != 0 { holding += 1; }
     }
     s.signals.as_mut_ptr()
 }
 
-fn signal(prices: &[f64], opens: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64], i: usize) -> u8 {
+fn signal(prices: &[f64], opens: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64], i: usize, position: i8, holding: usize, unrealized_pnl: f64) -> u8 {
     // USER CODE
 }
 "#;
@@ -663,6 +687,8 @@ async fn process_rl_job(
 
     let train_from: String = rl_config["train_from"].as_str().unwrap_or("").to_string();
     let train_to: String = rl_config["train_to"].as_str().unwrap_or("").to_string();
+    let external_test_from: Option<String> = rl_config["test_from"].as_str().map(|s| s.to_string());
+    let external_test_to: Option<String> = rl_config["test_to"].as_str().map(|s| s.to_string());
     let lookback = rl_config["lookback_candles"].as_u64().unwrap_or(20) as usize;
     let allow_short = rl_config["allow_short"].as_bool().unwrap_or(false);
     let reward_type = rl_config["reward"].as_str().unwrap_or("pnl").to_string();
@@ -758,7 +784,7 @@ async fn process_rl_job(
     let train_candles = to_candles(train_rows);
 
     let indicator_series = compute_indicators(&train_candles, &indicator_specs);
-    let (raw_states, feature_names, candle_indices) = build_state_matrix_with_indices(&train_candles, &indicator_series, lookback);
+    let (raw_states, mut feature_names, candle_indices) = build_state_matrix_with_indices(&train_candles, &indicator_series, lookback);
     if raw_states.nrows() == 0 {
         return Err(format!("Not enough usable candles after indicator warmup for {} {} in {} to {}", security_id, exchange_segment, train_from, train_to));
     }
@@ -767,6 +793,11 @@ async fn process_rl_job(
     let (means, stds) = normalise_with_stats(&mut train_fit_states);
     let mut states = raw_states;
     apply_normalisation_stats(&mut states, &means, &stds)?;
+    feature_names.extend([
+        "position".to_string(),
+        "holding_days".to_string(),
+        "unrealized_pnl".to_string(),
+    ]);
 
     let cfg = TrainConfig {
         max_episodes: 2000,
@@ -786,19 +817,43 @@ async fn process_rl_job(
     };
 
     let result = rl_train(&states, &train_candles.closes, &candle_indices, &cfg, &charges);
+    let external_test_pnl: Option<f64> = if let (Some(ref tf), Some(ref tt)) = (&external_test_from, &external_test_to) {
+        let test_rows = fetch_candles(tf, tt).await?;
+        if test_rows.is_empty() {
+            None
+        } else {
+            let test_candles = to_candles(test_rows);
+            let test_ind = compute_indicators(&test_candles, &indicator_specs);
+            let (mut test_states, _, test_indices) = build_state_matrix_with_indices(&test_candles, &test_ind, lookback);
+            apply_normalisation_stats(&mut test_states, &means, &stds)?;
+            if test_states.nrows() == 0 {
+                None
+            } else {
+                Some(rl::train::evaluate(&result.net, &test_states, &test_candles.closes, &test_indices, allow_short, &charges))
+            }
+        }
+    } else {
+        None
+    };
 
-    let weights = weights_to_bytes(&result.net);
+    let weights = weights_to_bytes(&result.net)?;
     let weights_key = format!("strategies/{}/weights.bin", strategy_id);
     upload(s3, bucket, &weights_key, weights).await?;
 
-    let raw_imp = feature_importance(&result.net, &states);
+    let train_states_for_explain = {
+        let base = states.slice(ndarray::s![..train_end, ..]).to_owned();
+        let mut out = ndarray::Array2::zeros((base.nrows(), base.ncols() + 3));
+        out.slice_mut(ndarray::s![.., ..base.ncols()]).assign(&base);
+        out
+    };
+    let raw_imp = feature_importance(&result.net, &train_states_for_explain);
     let norm_imp = normalise_importance(&raw_imp);
     let feature_importance_json: Vec<serde_json::Value> = feature_names.iter()
         .zip(norm_imp.iter())
         .map(|(name, &imp)| serde_json::json!({ "name": name, "importance": imp }))
         .collect();
 
-    let approx_rules = distil(&result.net, &states, &feature_names, 3);
+    let approx_rules = distil(&result.net, &train_states_for_explain, &feature_names, 3);
 
     let rust_snippet = net_to_rust(
         &result.net, &indicator_specs, lookback, &means, &stds, allow_short,
@@ -818,7 +873,9 @@ async fn process_rl_job(
         "final_train_reward": result.final_train_reward,
         "train_pnl": result.train_pnl,
         "val_pnl": result.val_pnl,
-        "test_pnl": result.test_pnl,
+        "test_pnl": external_test_pnl.unwrap_or(result.test_pnl),
+        "internal_test_pnl": result.test_pnl,
+        "external_test_pnl": external_test_pnl,
         "split": {
             "train_from": split_date(0),
             "train_to": split_date(train_end.saturating_sub(1)),

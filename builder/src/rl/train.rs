@@ -366,6 +366,30 @@ fn step_reward(
 
 struct Step { state: Vec<f64>, action: Action, ret: f64 }
 
+fn position_features(position: i8, holding: usize, entry_price: f64, price: f64) -> [f64; 3] {
+    let unrealized = match position {
+        1 => price - entry_price,
+        -1 => entry_price - price,
+        _ => 0.0,
+    };
+    [position as f64, holding as f64, unrealized]
+}
+
+fn decision_state(base_state: &[f64], position: i8, holding: usize, entry_price: f64, price: f64) -> Vec<f64> {
+    let mut state = Vec::with_capacity(base_state.len() + 3);
+    state.extend_from_slice(base_state);
+    state.extend_from_slice(&position_features(position, holding, entry_price, price));
+    state
+}
+
+fn close_position_reward(position: i8, entry_price: f64, price: f64, charges: &BrokerCharges) -> f64 {
+    match position {
+        1 => (price - entry_price) - charges.cost(entry_price, price),
+        -1 => (entry_price - price) - charges.cost(price, entry_price),
+        _ => 0.0,
+    }
+}
+
 fn rollout(
     net: &MLP,
     states: &Array2<f64>,
@@ -391,12 +415,20 @@ fn rollout(
 
     for t in 0..n {
         let row_idx = start + t;
-        let state: Vec<f64> = states.row(row_idx).to_vec();
-        let (action, _) = net.sample_action(&state, rng, config.allow_short);
         let price = closes[candle_indices[row_idx]];
+        let state = decision_state(&states.row(row_idx).to_vec(), position, holding, entry_price, price);
+        let (action, _) = net.sample_action(&state, rng, config.allow_short);
         let r = step_reward(action, &mut position, &mut entry_price, &mut holding, &mut trades, price, config, charges);
         steps.push(Step { state, action, ret: 0.0 });
         rewards.push(r);
+    }
+
+    if position != 0 && n > 0 {
+        let last_idx = start + n - 1;
+        let last_price = closes[candle_indices[last_idx]];
+        if let Some(last_reward) = rewards.last_mut() {
+            *last_reward += close_position_reward(position, entry_price, last_price, charges);
+        }
     }
 
     let (returns, episode_return) = objective_returns(&rewards, config);
@@ -413,8 +445,15 @@ fn objective_returns(rewards: &[f64], config: &TrainConfig) -> (Vec<f64>, f64) {
         "sharpe" => {
             let mean = rewards.iter().sum::<f64>() / rewards.len() as f64;
             let var = rewards.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / rewards.len() as f64;
-            let objective = if var < 1e-12 { 0.0 } else { mean / var.sqrt() };
-            (compute_returns(rewards, config.gamma), objective)
+            let std = var.sqrt();
+            let objective = if std < 1e-12 { 0.0 } else { mean / std };
+            if std < 1e-12 {
+                return (compute_returns(rewards, config.gamma), objective);
+            }
+            let shaped: Vec<f64> = rewards.iter()
+                .map(|r| *r - 0.5 * (r - mean).powi(2) / std)
+                .collect();
+            (compute_returns(&shaped, config.gamma), objective)
         }
         "min_drawdown" => {
             let mut equity = 0.0f64;
@@ -466,7 +505,7 @@ pub fn train(
     let val_indices = &candle_indices[train_end..val_end];
     let test_indices = &candle_indices[val_end..];
 
-    let input_size = states.ncols();
+    let input_size = states.ncols() + 3;
     let hidden_size = 32; // smaller = faster, still expressive enough
     let mut net = MLP::new(input_size, hidden_size);
     let mut m = AdamState::zero(&net);
@@ -550,40 +589,43 @@ pub fn evaluate(
     assert_eq!(n, candle_indices.len(), "state rows and candle indices must match");
     let mut position: i8 = 0;
     let mut entry_price = 0.0f64;
+    let mut holding = 0usize;
     let mut total_pnl = 0.0f64;
 
     for t in 0..n {
         let state = states.row(t).to_vec();
-        let action = net.greedy_action(&state, allow_short);
         let price = closes[candle_indices[t]];
+        let state = decision_state(&state, position, holding, entry_price, price);
+        let action = net.greedy_action(&state, allow_short);
 
         match (position, action) {
-            (0, 1) => { position = 1; entry_price = price; }
-            (0, 2) if allow_short => { position = -1; entry_price = price; }
+            (0, 1) => { position = 1; entry_price = price; holding = 0; }
+            (0, 2) if allow_short => { position = -1; entry_price = price; holding = 0; }
             (1, 0) | (1, 2) => {
-                total_pnl += (price - entry_price) - charges.cost(entry_price, price);
-                position = 0;
+                total_pnl += close_position_reward(position, entry_price, price, charges);
+                position = 0; holding = 0;
                 if action == 2 && allow_short { position = -1; entry_price = price; }
             }
             (-1, 0) | (-1, 1) => {
-                total_pnl += (entry_price - price) - charges.cost(price, entry_price);
-                position = 0;
+                total_pnl += close_position_reward(position, entry_price, price, charges);
+                position = 0; holding = 0;
                 if action == 1 { position = 1; entry_price = price; }
             }
             _ => {}
         }
+        if position != 0 { holding += 1; }
     }
     if position != 0 && n > 0 {
         let last = closes[candle_indices[n - 1]];
-        if position == 1 {
-            total_pnl += (last - entry_price) - charges.cost(entry_price, last);
-        } else {
-            total_pnl += (entry_price - last) - charges.cost(last, entry_price);
-        }
+        total_pnl += close_position_reward(position, entry_price, last, charges);
     }
     total_pnl
 }
 
-pub fn weights_to_bytes(net: &MLP) -> Vec<u8> {
-    net.params().iter().flat_map(|&v| v.to_le_bytes()).collect()
+pub fn weights_to_bytes(net: &MLP) -> Result<Vec<u8>, String> {
+    let params = net.params();
+    if params.iter().any(|v| !v.is_finite()) {
+        return Err("training diverged: network weights contain NaN/Inf".to_string());
+    }
+    Ok(params.iter().flat_map(|&v| v.to_le_bytes()).collect())
 }

@@ -35,6 +35,8 @@ export type RLSummary = {
 	train_pnl?: number
 	val_pnl: number       // absolute PnL per unit on the validation split
 	test_pnl: number | null  // absolute PnL per unit on the final holdout split
+	internal_test_pnl?: number
+	external_test_pnl?: number | null
 	split?: {
 		train_from: string
 		train_to: string

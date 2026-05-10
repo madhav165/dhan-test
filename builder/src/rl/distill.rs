@@ -50,7 +50,7 @@ impl TreeNode {
             Self::Split { feature, threshold, left, right } => {
                 let fname = feature_names.get(*feature).map(|s| s.as_str()).unwrap_or("?");
                 format!(
-                    "{}if {} ≤ {:.4}:\n{}else:\n{}",
+                    "{}if {} ≤ {:.4} (normalized):\n{}else:\n{}",
                     indent, fname, threshold,
                     left.to_text(feature_names, depth + 1),
                     right.to_text(feature_names, depth + 1),
@@ -151,7 +151,7 @@ pub fn net_to_rust(
     allow_short: bool,
 ) -> String {
     let num_inds = indicator_specs.len();
-    let state_dim = num_inds + 5 * lookback;
+    let state_dim = num_inds + 5 * lookback + 3;
     let mut lines: Vec<String> = vec![];
 
     lines.push(format!("    if i < {} {{ return 0; }}", lookback));
@@ -185,6 +185,9 @@ pub fn net_to_rust(
     lines.push("        for k in 0..5_usize { feat[off+k] = (raw[k] - means[off+k]) / stds[off+k]; }".into());
     lines.push("        off += 5;".into());
     lines.push("    }".into());
+    lines.push("    feat[off] = position as f64;".into());
+    lines.push("    feat[off + 1] = holding as f64;".into());
+    lines.push("    feat[off + 2] = unrealized_pnl;".into());
 
     // Forward pass: input -> tanh -> tanh -> softmax
     lines.push("    let mm = |w: &[f64], x: &[f64], r: usize, c: usize| -> Vec<f64> { (0..r).map(|i| (0..c).map(|j| w[i*c+j]*x[j]).sum::<f64>()).collect() };".into());
@@ -213,5 +216,5 @@ pub fn distil(net: &MLP, states: &Array2<f64>, feature_names: &[String], max_dep
     let scores: Vec<f64> = state_vecs.iter().map(|s| dominant_logit(net, s)).collect();
 
     let tree = build_tree(&state_vecs, &scores, 0, max_depth);
-    tree.to_text(feature_names, 0)
+    format!("Thresholds are shown in normalized feature space.\n{}", tree.to_text(feature_names, 0))
 }
