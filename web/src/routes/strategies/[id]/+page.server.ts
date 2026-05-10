@@ -50,6 +50,11 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 		[params.id]
 	)
 
+	const rlMetricsResult = await db.query(
+		`select episode, train_reward, val_metric from rl_training_metrics where strategy_id = $1 order by episode`,
+		[params.id]
+	)
+
 	return {
 		strategy: {
 			...stratResult.rows[0],
@@ -57,6 +62,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 		},
 		runs: runsResult.rows,
 		policies: policiesResult.rows,
+		rl_metrics: rlMetricsResult.rows,
 	}
 }
 

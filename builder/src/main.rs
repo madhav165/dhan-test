@@ -102,6 +102,7 @@ pub extern "C" fn run(len: u32) -> *mut u8 {
     let mut position: i8 = 0;
     let mut entry_price = 0.0_f64;
     let mut holding = 0_usize;
+    let mut prev_sig = 0u8;
     for i in 1..n {
         let price = prices[i];
         let unrealized_pnl = match position {
@@ -112,7 +113,8 @@ pub extern "C" fn run(len: u32) -> *mut u8 {
         let norm_position = position as f64 * 0.5;
         let norm_holding = (holding as f64 / 20.0).clamp(-5.0, 5.0);
         let norm_unrealized = (unrealized_pnl / entry_price.max(1e-8)).clamp(-5.0, 5.0);
-        let sig = signal(prices, opens, volumes, highs, lows, i, norm_position, norm_holding, norm_unrealized) as u8;
+        let raw_sig = signal(prices, opens, volumes, highs, lows, i, norm_position, norm_holding, norm_unrealized);
+        let sig = if raw_sig == 255 { prev_sig } else { raw_sig as u8 };
         s.signals[i] = sig;
         match (position, sig) {
             (0, 1) => { position = 1; entry_price = price; holding = 0; }
@@ -128,6 +130,7 @@ pub extern "C" fn run(len: u32) -> *mut u8 {
             _ => {}
         }
         if position != 0 { holding += 1; }
+        prev_sig = sig;
     }
     s.signals.as_mut_ptr()
 }
@@ -372,7 +375,7 @@ async fn process_run_job(
     ).await.map_err(|e| e.to_string())?;
 
     let run_row = db.query_one(
-        "select r.interval, r.from_date::text, r.to_date::text, s.wasm_key \
+        "select r.interval, r.from_date::text, r.to_date::text, s.wasm_key, s.rl_config \
          from backtest_runs r \
          join strategies s on s.id = r.strategy_id \
          where r.id = $1",
@@ -384,6 +387,33 @@ async fn process_run_job(
     let to_date: String = run_row.get(2);
     let wasm_key: Option<String> = run_row.get(3);
     let wasm_key = wasm_key.ok_or_else(|| "strategy not compiled".to_string())?;
+
+    let rl_config: serde_json::Value = run_row.get(4);
+    let lookback = rl_config["lookback_candles"].as_u64().unwrap_or(20) as usize;
+    let mut max_period = lookback;
+    if let Some(arr) = rl_config["indicators"].as_array() {
+        for ind in arr {
+            if let Some(p) = ind["period"].as_u64() {
+                max_period = max_period.max(p as usize);
+            }
+            if let Some(p) = ind["fast"].as_u64() {
+                max_period = max_period.max(p as usize);
+            }
+            if let Some(p) = ind["slow"].as_u64() {
+                max_period = max_period.max(p as usize);
+            }
+            if let Some(p) = ind["signal_period"].as_u64() {
+                max_period = max_period.max(p as usize);
+            }
+        }
+    }
+    let warmup_needed = lookback + max_period;
+    let buffer_days = (warmup_needed as f64 * 1.5).ceil() as i64;
+    let fetch_from = chrono::NaiveDate::parse_from_str(&from_date, "%Y-%m-%d")
+        .map_err(|e| e.to_string())?
+        .checked_sub_signed(chrono::Duration::days(buffer_days))
+        .ok_or("invalid from_date")?;
+    let fetch_from_str = fetch_from.format("%Y-%m-%d").to_string();
 
     let inst_rows = db.query(
         "select security_id, exchange_segment from backtest_run_instruments where run_id = $1",
@@ -406,6 +436,7 @@ async fn process_run_job(
         lows: Vec<f64>,
         closes: Vec<f64>,
         volumes: Vec<i64>,
+        extra_count: usize,
     }
 
     let mut inst_candles: Vec<InstCandles> = vec![];
@@ -420,7 +451,7 @@ async fn process_run_job(
              where security_id=$1 and exchange_segment=$2 and interval=$3 \
              and timestamp::date between $4::text::date and $5::text::date \
              order by timestamp",
-            &[&security_id.as_str(), &exchange_segment.as_str(), &interval, &from_date, &to_date],
+            &[&security_id.as_str(), &exchange_segment.as_str(), &interval, &fetch_from_str, &to_date],
         ).await.map_err(|e| e.to_string())?;
 
         if candle_rows.is_empty() { continue; }
@@ -429,6 +460,7 @@ async fn process_run_job(
             security_id, exchange_segment,
             timestamps: vec![], opens: vec![], highs: vec![],
             lows: vec![], closes: vec![], volumes: vec![],
+            extra_count: 0,
         };
         for r in &candle_rows {
             ic.timestamps.push(r.get(0));
@@ -438,6 +470,14 @@ async fn process_run_job(
             ic.closes.push(r.get(4));
             ic.volumes.push(r.get(5));
         }
+        let from_naive = chrono::NaiveDate::parse_from_str(&from_date, "%Y-%m-%d").unwrap();
+        ic.extra_count = ic.timestamps.iter()
+            .take_while(|&&ts| {
+                chrono::DateTime::from_timestamp(ts, 0)
+                    .map(|dt| dt.date_naive() < from_naive)
+                    .unwrap_or(false)
+            })
+            .count();
         inst_candles.push(ic);
     }
 
@@ -482,17 +522,19 @@ async fn process_run_job(
         .into_par_iter()
         .map(|ic| {
             let volumes_f64: Vec<f64> = ic.volumes.iter().map(|&v| v as f64).collect();
-            let signals = run_wasm(&wasm, &ic.closes, &ic.opens, &volumes_f64, &ic.highs, &ic.lows)?;
-            let metrics = compute_metrics(&ic.closes, &signals, &charges.clone());
+            let all_signals = run_wasm(&wasm, &ic.closes, &ic.opens, &volumes_f64, &ic.highs, &ic.lows)?;
+            let extra = ic.extra_count;
+            let signals = all_signals[extra..].to_vec();
+            let metrics = compute_metrics(&ic.closes[extra..], &signals, &charges.clone());
             Ok(InstResult {
                 security_id: ic.security_id,
                 exchange_segment: ic.exchange_segment,
-                timestamps: ic.timestamps,
-                opens: ic.opens,
-                highs: ic.highs,
-                lows: ic.lows,
-                closes: ic.closes,
-                volumes: ic.volumes,
+                timestamps: ic.timestamps[extra..].to_vec(),
+                opens: ic.opens[extra..].to_vec(),
+                highs: ic.highs[extra..].to_vec(),
+                lows: ic.lows[extra..].to_vec(),
+                closes: ic.closes[extra..].to_vec(),
+                volumes: ic.volumes[extra..].to_vec(),
                 signals,
                 metrics,
             })
@@ -897,6 +939,14 @@ async fn process_rl_job(
         "update strategies set rl_summary=$1 where id=$2",
         &[&rl_summary, &strategy_id],
     ).await.map_err(|e| e.to_string())?;
+
+    // Store per-episode training metrics
+    for m in &result.metrics {
+        db.execute(
+            "insert into rl_training_metrics (strategy_id, episode, train_reward, val_metric) values ($1, $2, $3, $4)",
+            &[&strategy_id, &(m.episode as i32), &m.train_reward, &m.val_metric],
+        ).await.map_err(|e| format!("failed to insert training metric: {}", e))?;
+    }
 
     match compile_snippet(s3, bucket, &strategy_id.to_string(), &rust_snippet).await {
         Ok(wasm_key) => {

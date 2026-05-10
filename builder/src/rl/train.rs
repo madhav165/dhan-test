@@ -584,6 +584,13 @@ fn objective_returns(rewards: &[f64], config: &TrainConfig) -> (Vec<f64>, f64) {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct EpisodeMetric {
+    pub episode: usize,
+    pub train_reward: f64,
+    pub val_metric: Option<f64>,
+}
+
 pub struct TrainResult {
     pub net: MLP,
     pub final_train_reward: f64,
@@ -592,6 +599,7 @@ pub struct TrainResult {
     pub test_pnl: f64,
     pub episodes: usize,
     pub best_episode: usize,
+    pub metrics: Vec<EpisodeMetric>,
 }
 
 pub fn train(
@@ -624,6 +632,7 @@ pub fn train(
     let mut best_episode = 0usize;
     let mut episodes_since_best = 0usize;
     let mut episodes_run = 0usize;
+    let mut metrics: Vec<EpisodeMetric> = vec![];
     let validation_interval = config.validation_interval.max(1);
 
     for ep in 0..config.max_episodes {
@@ -650,8 +659,10 @@ pub fn train(
 
         eprintln!("rl train: episode {}/{} return={:.4}", ep, config.max_episodes, final_train_reward);
 
+        let mut val_metric_opt: Option<f64> = None;
         if val_states.nrows() > 0 && ((ep + 1) % validation_interval == 0 || ep + 1 == config.max_episodes) {
             let val_metric = greedy_objective(&net, &val_states, closes, val_indices, config, charges);
+            val_metric_opt = Some(val_metric);
             if val_metric > best_val_metric + config.min_delta {
                 best_val_metric = val_metric;
                 best_net = net.clone();
@@ -665,6 +676,12 @@ pub fn train(
                 }
             }
         }
+
+        metrics.push(EpisodeMetric {
+            episode: ep + 1,
+            train_reward: final_train_reward,
+            val_metric: val_metric_opt,
+        });
     }
 
     if best_episode > 0 {
@@ -680,7 +697,7 @@ pub fn train(
         evaluate(&net, &test_states, closes, test_indices, config.allow_short, charges)
     } else { 0.0 };
     eprintln!("rl train: done. train_pnl={:.4} val_pnl={:.4} test_pnl={:.4}", train_pnl, val_pnl, test_pnl);
-    TrainResult { net, final_train_reward, train_pnl, val_pnl, test_pnl, episodes: episodes_run, best_episode }
+    TrainResult { net, final_train_reward, train_pnl, val_pnl, test_pnl, episodes: episodes_run, best_episode, metrics }
 }
 
 pub fn evaluate(

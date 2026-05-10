@@ -2,11 +2,13 @@
 	import { enhance } from '$app/forms'
 	import { invalidateAll } from '$app/navigation'
 	import { onDestroy } from 'svelte'
+	import { createChart, LineSeries, ColorType, type IChartApi, type ISeriesApi, type LineData } from 'lightweight-charts'
 
 	let { data } = $props()
 	const strategy = $derived(data.strategy)
 	const runs = $derived(data.runs)
 	const policies = $derived(data.policies)
+	const rlMetrics = $derived(data.rl_metrics ?? [])
 
 	const building = $derived(
 		strategy.build_status === 'pending' || strategy.build_status === 'building'
@@ -24,7 +26,43 @@
 		}
 	})
 
-	onDestroy(() => clearInterval(timer))
+	onDestroy(() => { clearInterval(timer); chart?.remove() })
+
+	let chartContainer: HTMLDivElement = $state() as HTMLDivElement
+	let chart: IChartApi
+	let trainSeries: ISeriesApi<'Line'>
+	let valSeries: ISeriesApi<'Line'>
+
+	$effect(() => {
+		if (!chartContainer || rlMetrics.length === 0) return
+		if (chart) chart.remove()
+
+		chart = createChart(chartContainer, {
+			autoSize: true,
+			layout: { textColor: '#ccc', background: { type: ColorType.Solid, color: 'transparent' } },
+			grid: { vertLines: { color: '#333' }, horzLines: { color: '#333' } },
+			leftPriceScale: { visible: true },
+			rightPriceScale: { visible: false },
+		})
+
+		trainSeries = chart.addSeries(LineSeries, { color: '#60a5fa', lineWidth: 2, title: 'Train reward' })
+		valSeries = chart.addSeries(LineSeries, { color: '#f87171', lineWidth: 2, title: 'Val metric' })
+
+		const trainData = rlMetrics.map((m: { episode: number; train_reward: number }) => ({
+			time: m.episode as unknown as import('lightweight-charts').Time,
+			value: m.train_reward,
+		})) as LineData[]
+		const valData = rlMetrics
+			.filter((m: { val_metric: number | null }) => m.val_metric != null)
+			.map((m: { episode: number; val_metric: number }) => ({
+				time: m.episode as unknown as import('lightweight-charts').Time,
+				value: m.val_metric,
+			})) as LineData[]
+
+		trainSeries.setData(trainData)
+		valSeries.setData(valData)
+		chart.timeScale().fitContent()
+	})
 </script>
 
 <div class="header">
@@ -108,6 +146,11 @@
 				</div>
 				{/if}
 			</div>
+
+			{#if rlMetrics.length > 0}
+				<h3>Training curves</h3>
+				<div class="chart-wrap" bind:this={chartContainer}></div>
+			{/if}
 
 			<h3>Feature importance</h3>
 			<div class="feature-list">
@@ -359,4 +402,6 @@
 	.feature-pct { color: var(--text-muted); font-size: 0.75rem; min-width: 36px; text-align: right; }
 
 	.rules-pre { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.8rem; line-height: 1.6; overflow-x: auto; padding: 12px; white-space: pre-wrap; }
+
+	.chart-wrap { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; height: 240px; margin-bottom: 8px; }
 </style>
