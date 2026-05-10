@@ -26,6 +26,13 @@
 	let train_to = $state('')
 	let selectedIndicators: string[] = $state(['rsi', 'sma'])
 	let constraints: RLConstraint[] = $state([])
+	let training_method = $state<'ppo' | 'reinforce'>('ppo')
+	let ppo_epochs = $state(4)
+	let clip_epsilon = $state(0.2)
+	let value_coef = $state(0.5)
+	let entropy_coef = $state(0.01)
+	let gae_lambda = $state(0.95)
+	let batch_episodes = $state(8)
 
 	function fmtDate(d: Date) {
 		return d.toISOString().slice(0, 10)
@@ -85,6 +92,13 @@
 		trading_symbol: instrument?.trading_symbol ?? '',
 		train_from,
 		train_to,
+		training_method,
+		ppo_epochs,
+		clip_epsilon,
+		value_coef,
+		entropy_coef,
+		gae_lambda,
+		batch_episodes,
 	})
 
 	let split = $derived(splitPreview(train_from, train_to))
@@ -177,6 +191,46 @@
 			Allow short positions
 		</label>
 	</div>
+
+	<div class="field">
+		<label>Training method</label>
+		<select bind:value={training_method} class="method-select">
+			<option value="ppo">PPO (Proximal Policy Optimization)</option>
+			<option value="reinforce">REINFORCE (vanilla policy gradient)</option>
+		</select>
+	</div>
+
+	{#if training_method === 'ppo'}
+		<div class="field ppo-params">
+			<label>PPO hyperparameters</label>
+			<div class="param-grid">
+				<div class="param">
+					<span class="param-label">Epochs</span>
+					<input type="number" min="1" max="20" bind:value={ppo_epochs} class="num-input" />
+				</div>
+				<div class="param">
+					<span class="param-label">Clip ε</span>
+					<input type="number" min="0.05" max="0.5" step="0.05" bind:value={clip_epsilon} class="num-input" />
+				</div>
+				<div class="param">
+					<span class="param-label">Value coef</span>
+					<input type="number" min="0.1" max="2" step="0.1" bind:value={value_coef} class="num-input" />
+				</div>
+				<div class="param">
+					<span class="param-label">Entropy coef</span>
+					<input type="number" min="0" max="0.1" step="0.005" bind:value={entropy_coef} class="num-input" />
+				</div>
+				<div class="param">
+					<span class="param-label">GAE λ</span>
+					<input type="number" min="0.8" max="1" step="0.05" bind:value={gae_lambda} class="num-input" />
+				</div>
+				<div class="param">
+					<span class="param-label">Batch episodes</span>
+					<input type="number" min="2" max="32" bind:value={batch_episodes} class="num-input" />
+				</div>
+			</div>
+		</div>
+	{/if}
 
 	<div class="field">
 		<label>Learning data range <span class="label-note">(split automatically into train / validation / test)</span></label>
@@ -302,5 +356,18 @@
 		font-size: 0.875rem; padding: 8px 20px; text-decoration: none;
 	}
 	.btn-secondary:hover { color: var(--text); }
+	.method-select {
+		background: var(--bg-surface);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		color: var(--text);
+		font-family: 'Inter', sans-serif;
+		font-size: 0.875rem;
+		padding: 8px 10px;
+	}
+	.ppo-params { margin-top: -8px; }
+	.param-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+	.param { display: flex; flex-direction: column; gap: 4px; }
+	.param-label { color: var(--text-muted); font-size: 0.7rem; }
 	.error { background: var(--red-bg); border-radius: 6px; color: var(--red-muted); font-size: 0.85rem; padding: 10px 14px; }
 </style>

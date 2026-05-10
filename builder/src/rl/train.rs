@@ -3,7 +3,7 @@ use rand::Rng;
 
 pub type Action = u8; // 0 = hold, 1 = buy, 2 = sell/short
 
-// 2-layer MLP: input → tanh → tanh → softmax over 3 actions
+// 2-layer MLP: input → tanh → tanh → softmax over 3 actions + value head
 #[derive(Clone)]
 pub struct MLP {
     pub w1: Vec<f64>,   // hidden × input
@@ -12,6 +12,8 @@ pub struct MLP {
     pub b2: Vec<f64>,   // hidden
     pub w_out: Vec<f64>, // 3 × hidden
     pub b_out: Vec<f64>, // 3
+    pub w_value: Vec<f64>, // hidden × 1
+    pub b_value: f64,
     pub input_size: usize,
     pub hidden_size: usize,
 }
@@ -30,6 +32,8 @@ impl MLP {
             b2: vec![0.0; hidden_size],
             w_out: init(3 * hidden_size),
             b_out: vec![0.0; 3],
+            w_value: init(hidden_size),
+            b_value: 0.0,
             input_size,
             hidden_size,
         }
@@ -58,6 +62,13 @@ impl MLP {
         let probs = [exp[0] / sum, exp[1] / sum, exp[2] / sum];
 
         (h1, h2, probs)
+    }
+
+    /// Forward pass including value head. Returns (h1, h2, probs, value).
+    pub fn forward_full_with_value(&self, x: &[f64]) -> (Vec<f64>, Vec<f64>, [f64; 3], f64) {
+        let (h1, h2, probs) = self.forward_full(x);
+        let value = h2.iter().zip(&self.w_value).map(|(h, w)| h * w).sum::<f64>() + self.b_value;
+        (h1, h2, probs, value)
     }
 
     pub fn probs(&self, x: &[f64], mask_sell: bool) -> [f64; 3] {
@@ -166,6 +177,12 @@ impl MLP {
         update!(self.b2, grads.b2, m.b2, v.b2);
         update!(self.w_out, grads.w_out, m.w_out, v.w_out);
         update!(self.b_out, grads.b_out, m.b_out, v.b_out);
+        update!(self.w_value, grads.w_value, m.w_value, v.w_value);
+        // scalar b_value
+        m.b_value = beta1 * m.b_value + (1.0 - beta1) * grads.b_value;
+        let v_bv = beta2 * v.b_value + (1.0 - beta2) * grads.b_value.powi(2);
+        v.b_value = v_bv;
+        self.b_value -= lr * (m.b_value / bc1) / ((v_bv / bc2).sqrt() + eps);
     }
 
     pub fn params(&self) -> Vec<f64> {
@@ -173,6 +190,7 @@ impl MLP {
         p.extend_from_slice(&self.w1); p.extend_from_slice(&self.b1);
         p.extend_from_slice(&self.w2); p.extend_from_slice(&self.b2);
         p.extend_from_slice(&self.w_out); p.extend_from_slice(&self.b_out);
+        p.extend_from_slice(&self.w_value); p.push(self.b_value);
         p
     }
 }
@@ -181,6 +199,7 @@ pub struct Grads {
     pub w1: Vec<f64>, pub b1: Vec<f64>,
     pub w2: Vec<f64>, pub b2: Vec<f64>,
     pub w_out: Vec<f64>, pub b_out: Vec<f64>,
+    pub w_value: Vec<f64>, pub b_value: f64,
 }
 
 impl Grads {
@@ -189,6 +208,7 @@ impl Grads {
             w1: vec![0.0; net.w1.len()], b1: vec![0.0; net.b1.len()],
             w2: vec![0.0; net.w2.len()], b2: vec![0.0; net.b2.len()],
             w_out: vec![0.0; net.w_out.len()], b_out: vec![0.0; net.b_out.len()],
+            w_value: vec![0.0; net.w_value.len()], b_value: 0.0,
         }
     }
 
@@ -196,6 +216,7 @@ impl Grads {
         let sum_sq = self.w1.iter().chain(&self.b1)
             .chain(&self.w2).chain(&self.b2)
             .chain(&self.w_out).chain(&self.b_out)
+            .chain(&self.w_value).chain(std::iter::once(&self.b_value))
             .map(|v| v * v)
             .sum::<f64>();
         let norm = sum_sq.sqrt();
@@ -205,9 +226,11 @@ impl Grads {
         let scale = max_norm / norm;
         for v in self.w1.iter_mut().chain(&mut self.b1)
             .chain(&mut self.w2).chain(&mut self.b2)
-            .chain(&mut self.w_out).chain(&mut self.b_out) {
+            .chain(&mut self.w_out).chain(&mut self.b_out)
+            .chain(&mut self.w_value) {
             *v *= scale;
         }
+        self.b_value *= scale;
     }
 }
 
@@ -215,6 +238,7 @@ pub struct AdamState {
     pub w1: Vec<f64>, pub b1: Vec<f64>,
     pub w2: Vec<f64>, pub b2: Vec<f64>,
     pub w_out: Vec<f64>, pub b_out: Vec<f64>,
+    pub w_value: Vec<f64>, pub b_value: f64,
 }
 
 impl AdamState {
@@ -223,6 +247,7 @@ impl AdamState {
             w1: vec![0.0; net.w1.len()], b1: vec![0.0; net.b1.len()],
             w2: vec![0.0; net.w2.len()], b2: vec![0.0; net.b2.len()],
             w_out: vec![0.0; net.w_out.len()], b_out: vec![0.0; net.b_out.len()],
+            w_value: vec![0.0; net.w_value.len()], b_value: 0.0,
         }
     }
 }
@@ -267,6 +292,13 @@ pub struct TrainConfig {
     pub max_holding_days: Option<usize>,
     pub penalty_trades_per_month: Option<f64>,
     pub max_trades_per_month: Option<usize>,
+    pub training_method: String,
+    pub ppo_epochs: usize,
+    pub clip_epsilon: f64,
+    pub value_coef: f64,
+    pub entropy_coef: f64,
+    pub gae_lambda: f64,
+    pub batch_episodes: usize,
 }
 
 impl Default for TrainConfig {
@@ -286,6 +318,13 @@ impl Default for TrainConfig {
             max_holding_days: None,
             penalty_trades_per_month: None,
             max_trades_per_month: None,
+            training_method: "ppo".into(),
+            ppo_epochs: 4,
+            clip_epsilon: 0.2,
+            value_coef: 0.5,
+            entropy_coef: 0.01,
+            gae_lambda: 0.95,
+            batch_episodes: 8,
         }
     }
 }
@@ -584,6 +623,167 @@ fn objective_returns(rewards: &[f64], config: &TrainConfig) -> (Vec<f64>, f64) {
     }
 }
 
+fn gae(rewards: &[f64], values: &[f64], gamma: f64, lambda: f64) -> Vec<f64> {
+    let n = rewards.len();
+    let mut advantages = vec![0.0; n];
+    let mut gae = 0.0;
+    for t in (0..n).rev() {
+        let next_value = if t + 1 < n { values[t + 1] } else { 0.0 };
+        let delta = rewards[t] + gamma * next_value - values[t];
+        gae = delta + gamma * lambda * gae;
+        advantages[t] = gae;
+    }
+    advantages
+}
+
+struct TrajectoryStep {
+    state: Vec<f64>,
+    action: Action,
+    log_prob: f64,
+    value: f64,
+    reward: f64,
+}
+
+fn rollout_ppo(
+    net: &MLP,
+    states: &Array2<f64>,
+    closes: &[f64],
+    candle_indices: &[usize],
+    config: &TrainConfig,
+    charges: &BrokerCharges,
+    rng: &mut impl Rng,
+) -> (Vec<TrajectoryStep>, f64) {
+    let n = states.nrows().min(config.episode_steps);
+    let mut position: i8 = 0;
+    let mut entry_price = 0.0f64;
+    let mut holding = 0usize;
+    let mut trades = 0usize;
+    let mut steps = vec![];
+    let mut rewards = vec![];
+
+    let start = if states.nrows() > n {
+        rng.random_range(0..=(states.nrows() - n))
+    } else {
+        0
+    };
+
+    for t in 0..n {
+        let row_idx = start + t;
+        let price = closes[candle_indices[row_idx]];
+        let state = decision_state(&states.row(row_idx).to_vec(), position, holding, entry_price, price);
+        let (action, log_prob) = net.sample_action(&state, rng, config.allow_short);
+        let (_, _, _, value) = net.forward_full_with_value(&state);
+        let r = step_reward(action, &mut position, &mut entry_price, &mut holding, &mut trades, price, config, charges);
+        steps.push(TrajectoryStep { state, action, log_prob, value, reward: r });
+        rewards.push(r);
+    }
+
+    if position != 0 && n > 0 {
+        let last_idx = start + n - 1;
+        let last_price = closes[candle_indices[last_idx]];
+        if let Some(last_step) = steps.last_mut() {
+            last_step.reward += close_position_reward(position, entry_price, last_price, charges);
+        }
+    }
+
+    let episode_return = rewards.iter().sum::<f64>();
+    (steps, episode_return)
+}
+
+impl MLP {
+    /// Accumulate PPO gradient for a single transition.
+    pub fn accumulate_grad_ppo(
+        &self,
+        x: &[f64],
+        action: Action,
+        old_log_prob: f64,
+        advantage: f64,
+        ret: f64,
+        clip_epsilon: f64,
+        value_coef: f64,
+        entropy_coef: f64,
+        grads: &mut Grads,
+    ) {
+        let (h1, h2, probs, value) = self.forward_full_with_value(x);
+        let action_idx = action as usize;
+        let new_log_prob = probs[action_idx].max(1e-12).ln();
+        let ratio = (new_log_prob - old_log_prob).exp();
+
+        // Policy gradient (clipped surrogate)
+        let clipped = ratio.clamp(1.0 - clip_epsilon, 1.0 + clip_epsilon);
+        // Use clipped objective when unclipped would be larger (min operator)
+        let use_clipped = ratio * advantage > clipped * advantage;
+
+        let mut d_logits = [0.0f64; 3];
+        if !use_clipped {
+            for k in 0..3 {
+                let indicator = if k == action_idx { 1.0 } else { 0.0 };
+                d_logits[k] = -advantage * ratio * (indicator - probs[k]);
+            }
+        }
+        // Entropy bonus
+        for k in 0..3 {
+            if probs[k] > 1e-12 {
+                d_logits[k] += entropy_coef * probs[k] * (probs[k].ln() + 1.0);
+            }
+        }
+
+        // Value gradient
+        let d_value = value_coef * (value - ret);
+
+        // w_out, b_out
+        for i in 0..3 {
+            for j in 0..self.hidden_size {
+                grads.w_out[i * self.hidden_size + j] += d_logits[i] * h2[j];
+            }
+            grads.b_out[i] += d_logits[i];
+        }
+
+        // w_value, b_value
+        for j in 0..self.hidden_size {
+            grads.w_value[j] += d_value * h2[j];
+        }
+        grads.b_value += d_value;
+
+        // Backprop through h2: combine policy and value gradients
+        let mut d_h2 = vec![0.0f64; self.hidden_size];
+        for j in 0..self.hidden_size {
+            for i in 0..3 {
+                d_h2[j] += self.w_out[i * self.hidden_size + j] * d_logits[i];
+            }
+            d_h2[j] += self.w_value[j] * d_value;
+        }
+
+        let d_pre_h2: Vec<f64> = h2.iter().zip(&d_h2).map(|(h, &g)| g * (1.0 - h * h)).collect();
+
+        // w2, b2
+        for i in 0..self.hidden_size {
+            for j in 0..self.hidden_size {
+                grads.w2[i * self.hidden_size + j] += d_pre_h2[i] * h1[j];
+            }
+            grads.b2[i] += d_pre_h2[i];
+        }
+
+        // Backprop through h1
+        let mut d_h1 = vec![0.0f64; self.hidden_size];
+        for j in 0..self.hidden_size {
+            for i in 0..self.hidden_size {
+                d_h1[j] += self.w2[i * self.hidden_size + j] * d_pre_h2[i];
+            }
+        }
+
+        let d_pre_h1: Vec<f64> = h1.iter().zip(&d_h1).map(|(h, &g)| g * (1.0 - h * h)).collect();
+
+        // w1, b1
+        for i in 0..self.hidden_size {
+            for j in 0..self.input_size {
+                grads.w1[i * self.input_size + j] += d_pre_h1[i] * x[j];
+            }
+            grads.b1[i] += d_pre_h1[i];
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct EpisodeMetric {
     pub episode: usize,
@@ -602,7 +802,7 @@ pub struct TrainResult {
     pub metrics: Vec<EpisodeMetric>,
 }
 
-pub fn train(
+pub fn train_reinforce(
     states: &Array2<f64>,
     closes: &[f64],
     candle_indices: &[usize],
@@ -620,7 +820,7 @@ pub fn train(
     let test_indices = &candle_indices[val_end..];
 
     let input_size = states.ncols() + 3;
-    let hidden_size = 32; // smaller = faster, still expressive enough
+    let hidden_size = 32;
     let mut net = MLP::new(input_size, hidden_size);
     let mut m = AdamState::zero(&net);
     let mut v = AdamState::zero(&net);
@@ -648,7 +848,6 @@ pub fn train(
         for step in &steps {
             net.accumulate_grad(&step.state, step.action, step.ret, &mut grads);
         }
-        // normalise grads by trajectory length
         let n_steps = steps.len() as f64;
         macro_rules! norm { ($v:expr) => { for x in $v.iter_mut() { *x /= n_steps; } }; }
         norm!(grads.w1); norm!(grads.b1); norm!(grads.w2); norm!(grads.b2);
@@ -657,7 +856,7 @@ pub fn train(
 
         net.apply_adam(&grads, &mut m, &mut v, ep + 1, config.lr);
 
-        eprintln!("rl train: episode {}/{} return={:.4}", ep, config.max_episodes, final_train_reward);
+        eprintln!("rl reinforce: episode {}/{} return={:.4}", ep, config.max_episodes, final_train_reward);
 
         let mut val_metric_opt: Option<f64> = None;
         if val_states.nrows() > 0 && ((ep + 1) % validation_interval == 0 || ep + 1 == config.max_episodes) {
@@ -671,7 +870,7 @@ pub fn train(
             } else {
                 episodes_since_best += validation_interval;
                 if episodes_since_best >= config.early_stopping_patience {
-                    eprintln!("rl train: early stopping at episode {} best_episode={} best_val_metric={:.4}", ep + 1, best_episode, best_val_metric);
+                    eprintln!("rl reinforce: early stopping at episode {} best_episode={} best_val_metric={:.4}", ep + 1, best_episode, best_val_metric);
                     break;
                 }
             }
@@ -689,15 +888,162 @@ pub fn train(
     }
 
     let train_pnl = evaluate(&net, &train_states, closes, train_indices, config.allow_short, charges);
-
     let val_pnl = if val_states.nrows() > 0 {
         evaluate(&net, &val_states, closes, val_indices, config.allow_short, charges)
     } else { 0.0 };
     let test_pnl = if test_states.nrows() > 0 {
         evaluate(&net, &test_states, closes, test_indices, config.allow_short, charges)
     } else { 0.0 };
-    eprintln!("rl train: done. train_pnl={:.4} val_pnl={:.4} test_pnl={:.4}", train_pnl, val_pnl, test_pnl);
+    eprintln!("rl reinforce: done. train_pnl={:.4} val_pnl={:.4} test_pnl={:.4}", train_pnl, val_pnl, test_pnl);
     TrainResult { net, final_train_reward, train_pnl, val_pnl, test_pnl, episodes: episodes_run, best_episode, metrics }
+}
+
+pub fn train_ppo(
+    states: &Array2<f64>,
+    closes: &[f64],
+    candle_indices: &[usize],
+    config: &TrainConfig,
+    charges: &BrokerCharges,
+) -> TrainResult {
+    let n = states.nrows();
+    assert_eq!(n, candle_indices.len(), "state rows and candle indices must match");
+    let (train_end, val_end) = split_points(n);
+    let train_states = states.slice(ndarray::s![..train_end, ..]).to_owned();
+    let val_states = states.slice(ndarray::s![train_end..val_end, ..]).to_owned();
+    let test_states = states.slice(ndarray::s![val_end.., ..]).to_owned();
+    let train_indices = &candle_indices[..train_end];
+    let val_indices = &candle_indices[train_end..val_end];
+    let test_indices = &candle_indices[val_end..];
+
+    let input_size = states.ncols() + 3;
+    let hidden_size = 32;
+    let mut net = MLP::new(input_size, hidden_size);
+    let mut m = AdamState::zero(&net);
+    let mut v = AdamState::zero(&net);
+    let mut rng = rand::rng();
+    let mut best_net = net.clone();
+    let mut best_val_metric = f64::NEG_INFINITY;
+    let mut best_iteration = 0usize;
+    let mut iterations_since_best = 0usize;
+    let mut total_episodes = 0usize;
+    let mut metrics: Vec<EpisodeMetric> = vec![];
+    let validation_interval = config.validation_interval.max(1);
+    let ppo_epochs = config.ppo_epochs.max(1);
+    let clip_epsilon = config.clip_epsilon;
+    let value_coef = config.value_coef;
+    let entropy_coef = config.entropy_coef;
+    let gae_lambda = config.gae_lambda;
+    let batch_episodes = config.batch_episodes.max(1);
+
+    for iteration in 0..config.max_episodes {
+        // Collect batch of trajectories
+        let mut batch_states: Vec<Vec<f64>> = vec![];
+        let mut batch_actions: Vec<Action> = vec![];
+        let mut batch_log_probs: Vec<f64> = vec![];
+        let mut batch_advantages: Vec<f64> = vec![];
+        let mut batch_returns: Vec<f64> = vec![];
+        let mut episode_returns = vec![];
+
+        for _ in 0..batch_episodes {
+            let (traj, ep_return) = rollout_ppo(&net, &train_states, closes, train_indices, config, charges, &mut rng);
+            episode_returns.push(ep_return);
+            total_episodes += 1;
+
+            let traj_rewards: Vec<f64> = traj.iter().map(|t| t.reward).collect();
+            let traj_values: Vec<f64> = traj.iter().map(|t| t.value).collect();
+            let advantages = gae(&traj_rewards, &traj_values, config.gamma, gae_lambda);
+            let returns: Vec<f64> = advantages.iter().zip(&traj_values).map(|(a, v)| a + v).collect();
+
+            for (t, (adv, ret)) in traj.into_iter().zip(advantages.into_iter().zip(returns.into_iter())) {
+                batch_states.push(t.state);
+                batch_actions.push(t.action);
+                batch_log_probs.push(t.log_prob);
+                batch_advantages.push(adv);
+                batch_returns.push(ret);
+            }
+        }
+
+        // Normalize advantages
+        let adv_mean = batch_advantages.iter().sum::<f64>() / batch_advantages.len() as f64;
+        let adv_std = (batch_advantages.iter().map(|a| (a - adv_mean).powi(2)).sum::<f64>() / batch_advantages.len() as f64).sqrt().max(1e-8);
+        let normalized_advantages: Vec<f64> = batch_advantages.iter().map(|a| (a - adv_mean) / adv_std).collect();
+
+        let train_reward = episode_returns.iter().sum::<f64>() / episode_returns.len() as f64;
+
+        // PPO update epochs with minibatch SGD
+        let minibatch_size = (batch_states.len() / 2).max(1);
+        for _ in 0..ppo_epochs {
+            let mut indices: Vec<usize> = (0..batch_states.len()).collect();
+            use rand::seq::SliceRandom;
+            indices.shuffle(&mut rng);
+
+            for chunk in indices.chunks(minibatch_size) {
+                let mut grads = Grads::zero(&net);
+                for &idx in chunk {
+                    net.accumulate_grad_ppo(
+                        &batch_states[idx],
+                        batch_actions[idx],
+                        batch_log_probs[idx],
+                        normalized_advantages[idx],
+                        batch_returns[idx],
+                        clip_epsilon,
+                        value_coef,
+                        entropy_coef,
+                        &mut grads,
+                    );
+                }
+
+                let n = chunk.len() as f64;
+                macro_rules! scale { ($v:expr) => { for x in $v.iter_mut() { *x /= n; } }; }
+                scale!(grads.w1); scale!(grads.b1); scale!(grads.w2); scale!(grads.b2);
+                scale!(grads.w_out); scale!(grads.b_out); scale!(grads.w_value);
+                grads.b_value /= n;
+                grads.clip_global_norm(config.grad_clip_norm);
+
+                net.apply_adam(&grads, &mut m, &mut v, iteration + 1, config.lr);
+            }
+        }
+
+        eprintln!("rl ppo: iteration {}/{} avg_return={:.4}", iteration, config.max_episodes, train_reward);
+
+        let mut val_metric_opt: Option<f64> = None;
+        if val_states.nrows() > 0 && ((iteration + 1) % validation_interval == 0 || iteration + 1 == config.max_episodes) {
+            let val_metric = greedy_objective(&net, &val_states, closes, val_indices, config, charges);
+            val_metric_opt = Some(val_metric);
+            if val_metric > best_val_metric + config.min_delta {
+                best_val_metric = val_metric;
+                best_net = net.clone();
+                best_iteration = iteration + 1;
+                iterations_since_best = 0;
+            } else {
+                iterations_since_best += validation_interval;
+                if iterations_since_best >= config.early_stopping_patience {
+                    eprintln!("rl ppo: early stopping at iteration {} best_iteration={} best_val_metric={:.4}", iteration + 1, best_iteration, best_val_metric);
+                    break;
+                }
+            }
+        }
+
+        metrics.push(EpisodeMetric {
+            episode: total_episodes,
+            train_reward,
+            val_metric: val_metric_opt,
+        });
+    }
+
+    if best_iteration > 0 {
+        net = best_net;
+    }
+
+    let train_pnl = evaluate(&net, &train_states, closes, train_indices, config.allow_short, charges);
+    let val_pnl = if val_states.nrows() > 0 {
+        evaluate(&net, &val_states, closes, val_indices, config.allow_short, charges)
+    } else { 0.0 };
+    let test_pnl = if test_states.nrows() > 0 {
+        evaluate(&net, &test_states, closes, test_indices, config.allow_short, charges)
+    } else { 0.0 };
+    eprintln!("rl ppo: done. train_pnl={:.4} val_pnl={:.4} test_pnl={:.4}", train_pnl, val_pnl, test_pnl);
+    TrainResult { net, final_train_reward: metrics.last().map(|m| m.train_reward).unwrap_or(0.0), train_pnl, val_pnl, test_pnl, episodes: total_episodes, best_episode: best_iteration, metrics }
 }
 
 pub fn evaluate(

@@ -15,10 +15,17 @@ export type RLConfig = {
 	security_id: string
 	exchange_segment: string
 	trading_symbol: string
-	train_from: string  // YYYY-MM-DD, full learning range start
-	train_to: string    // YYYY-MM-DD, full learning range end
-	test_from?: string  // legacy configs only
-	test_to?: string    // legacy configs only
+	train_from: string
+	train_to: string
+	test_from?: string
+	test_to?: string
+	training_method: 'ppo' | 'reinforce'
+	ppo_epochs: number
+	clip_epsilon: number
+	value_coef: number
+	entropy_coef: number
+	gae_lambda: number
+	batch_episodes: number
 }
 
 export type FeatureImportance = {

@@ -1,6 +1,6 @@
 mod rl;
 use rl::features::{Candles, IndicatorSpec, compute_indicators, build_state_matrix_with_indices, normalise_with_stats, apply_normalisation_stats};
-use rl::train::{TrainConfig, train as rl_train, weights_to_bytes, split_points, collect_greedy_states};
+use rl::train::{TrainConfig, train_reinforce, train_ppo, weights_to_bytes, split_points, collect_greedy_states};
 use rl::distill::{feature_importance, normalise_importance, distil, net_to_rust};
 
 use std::env;
@@ -737,6 +737,13 @@ async fn process_rl_job(
     let lookback = rl_config["lookback_candles"].as_u64().unwrap_or(20) as usize;
     let allow_short = rl_config["allow_short"].as_bool().unwrap_or(false);
     let reward_type = rl_config["reward"].as_str().unwrap_or("pnl").to_string();
+    let training_method = rl_config["training_method"].as_str().unwrap_or("ppo").to_string();
+    let ppo_epochs = rl_config["ppo_epochs"].as_u64().unwrap_or(4) as usize;
+    let clip_epsilon = rl_config["clip_epsilon"].as_f64().unwrap_or(0.2);
+    let value_coef = rl_config["value_coef"].as_f64().unwrap_or(0.5);
+    let entropy_coef = rl_config["entropy_coef"].as_f64().unwrap_or(0.01);
+    let gae_lambda = rl_config["gae_lambda"].as_f64().unwrap_or(0.95);
+    let batch_episodes = rl_config["batch_episodes"].as_u64().unwrap_or(8) as usize;
 
     let indicator_specs: Vec<IndicatorSpec> = serde_json::from_value(
         rl_config["indicators"].clone()
@@ -859,9 +866,20 @@ async fn process_rl_job(
         max_holding_days,
         penalty_trades_per_month: penalty_trades,
         max_trades_per_month,
+        training_method: training_method.clone(),
+        ppo_epochs,
+        clip_epsilon,
+        value_coef,
+        entropy_coef,
+        gae_lambda,
+        batch_episodes,
     };
 
-    let result = rl_train(&states, &train_candles.closes, &candle_indices, &cfg, &charges);
+    let result = if training_method == "reinforce" {
+        train_reinforce(&states, &train_candles.closes, &candle_indices, &cfg, &charges)
+    } else {
+        train_ppo(&states, &train_candles.closes, &candle_indices, &cfg, &charges)
+    };
     let external_test_pnl: Option<f64> = if let (Some(ref tf), Some(ref tt)) = (&external_test_from, &external_test_to) {
         let test_rows = fetch_candles(tf, tt).await?;
         if test_rows.is_empty() {
