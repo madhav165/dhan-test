@@ -43,6 +43,9 @@
 			grid: { vertLines: { color: '#333' }, horzLines: { color: '#333' } },
 			leftPriceScale: { visible: true },
 			rightPriceScale: { visible: false },
+			timeScale: {
+				tickMarkFormatter: (time: number) => String(time),
+			},
 		})
 
 		trainSeries = chart.addSeries(LineSeries, { color: '#60a5fa', lineWidth: 2, title: 'Train reward' })
