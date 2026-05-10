@@ -1066,7 +1066,8 @@ pub fn train_ppo(
         evaluate(&net, &test_states, closes, test_indices, config.allow_short, charges)
     } else { 0.0 };
     eprintln!("rl ppo: done. train_pnl={:.4} val_pnl={:.4} test_pnl={:.4}", train_pnl, val_pnl, test_pnl);
-    TrainResult { net, final_train_reward: metrics.last().map(|m| m.train_reward).unwrap_or(0.0), train_pnl, val_pnl, test_pnl, episodes: total_episodes, best_episode: best_iteration, metrics }
+    let best_episode_actual = if best_iteration > 0 { best_iteration * batch_episodes } else { 0 };
+    TrainResult { net, final_train_reward: metrics.last().map(|m| m.train_reward).unwrap_or(0.0), train_pnl, val_pnl, test_pnl, episodes: total_episodes, best_episode: best_episode_actual, metrics }
 }
 
 pub fn evaluate(
