@@ -1,6 +1,6 @@
 mod rl;
-use rl::features::{Candles, IndicatorSpec, compute_indicators, build_state_matrix, normalise_with_stats};
-use rl::train::{TrainConfig, train as rl_train, weights_to_bytes};
+use rl::features::{Candles, IndicatorSpec, compute_indicators, build_state_matrix_with_indices, normalise_with_stats, apply_normalisation_stats};
+use rl::train::{TrainConfig, train as rl_train, weights_to_bytes, split_points};
 use rl::distill::{feature_importance, normalise_importance, distil, net_to_rust};
 
 use std::env;
@@ -8,6 +8,7 @@ use std::fs;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
+use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use tokio_postgres::NoTls;
 use aws_sdk_s3::{Client as S3Client, config::Builder as S3Builder, config::BehaviorVersion};
@@ -34,6 +35,7 @@ use indicators::cci::cci;
 
 struct State {
     prices: Vec<f64>,
+    opens: Vec<f64>,
     volumes: Vec<f64>,
     highs: Vec<f64>,
     lows: Vec<f64>,
@@ -44,6 +46,7 @@ unsafe impl Sync for WasmState {}
 
 static STATE: WasmState = WasmState(UnsafeCell::new(State {
     prices: Vec::new(),
+    opens: Vec::new(),
     volumes: Vec::new(),
     highs: Vec::new(),
     lows: Vec::new(),
@@ -55,6 +58,13 @@ pub extern "C" fn alloc(len: u32) -> *mut f64 {
     let s = unsafe { &mut *STATE.0.get() };
     s.prices = vec![0.0; len as usize];
     s.prices.as_mut_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn alloc_open(len: u32) -> *mut f64 {
+    let s = unsafe { &mut *STATE.0.get() };
+    s.opens = vec![0.0; len as usize];
+    s.opens.as_mut_ptr()
 }
 
 #[no_mangle]
@@ -85,16 +95,17 @@ pub extern "C" fn run(len: u32) -> *mut u8 {
     s.signals = vec![0u8; n];
     if n < 2 { return s.signals.as_mut_ptr(); }
     let prices = &s.prices[..n];
+    let opens = &s.opens[..s.opens.len().min(n)];
     let volumes = &s.volumes[..s.volumes.len().min(n)];
     let highs = &s.highs[..s.highs.len().min(n)];
     let lows = &s.lows[..s.lows.len().min(n)];
     for i in 1..n {
-        s.signals[i] = signal(prices, volumes, highs, lows, i) as u8;
+        s.signals[i] = signal(prices, opens, volumes, highs, lows, i) as u8;
     }
     s.signals.as_mut_ptr()
 }
 
-fn signal(prices: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64], i: usize) -> u8 {
+fn signal(prices: &[f64], opens: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64], i: usize) -> u8 {
     // USER CODE
 }
 "#;
@@ -142,7 +153,7 @@ async fn download(s3: &S3Client, bucket: &str, key: &str) -> Result<Vec<u8>, Str
     Ok(bytes.to_vec())
 }
 
-fn run_wasm(wasm: &[u8], closes: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64]) -> Result<Vec<u8>, String> {
+fn run_wasm(wasm: &[u8], closes: &[f64], opens: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64]) -> Result<Vec<u8>, String> {
     use wasmtime::{Engine, Linker, Module, Store};
 
     let engine = Engine::default();
@@ -168,7 +179,7 @@ fn run_wasm(wasm: &[u8], closes: &[f64], volumes: &[f64], highs: &[f64], lows: &
         }
     }
 
-    for (export, slice) in [("alloc_volume", volumes), ("alloc_high", highs), ("alloc_low", lows)] {
+    for (export, slice) in [("alloc_open", opens), ("alloc_volume", volumes), ("alloc_high", highs), ("alloc_low", lows)] {
         if let Ok(f) = instance.get_typed_func::<u32, u32>(&mut store, export) {
             let ptr = f.call(&mut store, len).map_err(|e| e.to_string())?;
             let data = memory.data_mut(&mut store);
@@ -444,7 +455,7 @@ async fn process_run_job(
         .into_par_iter()
         .map(|ic| {
             let volumes_f64: Vec<f64> = ic.volumes.iter().map(|&v| v as f64).collect();
-            let signals = run_wasm(&wasm, &ic.closes, &volumes_f64, &ic.highs, &ic.lows)?;
+            let signals = run_wasm(&wasm, &ic.closes, &ic.opens, &volumes_f64, &ic.highs, &ic.lows)?;
             let metrics = compute_metrics(&ic.closes, &signals, &charges.clone());
             Ok(InstResult {
                 security_id: ic.security_id,
@@ -652,8 +663,6 @@ async fn process_rl_job(
 
     let train_from: String = rl_config["train_from"].as_str().unwrap_or("").to_string();
     let train_to: String = rl_config["train_to"].as_str().unwrap_or("").to_string();
-    let test_from: Option<String> = rl_config["test_from"].as_str().map(|s| s.to_string());
-    let test_to: Option<String> = rl_config["test_to"].as_str().map(|s| s.to_string());
     let lookback = rl_config["lookback_candles"].as_u64().unwrap_or(20) as usize;
     let allow_short = rl_config["allow_short"].as_bool().unwrap_or(false);
     let reward_type = rl_config["reward"].as_str().unwrap_or("pnl").to_string();
@@ -735,20 +744,37 @@ async fn process_rl_job(
         closes:  rows.iter().map(|r| r.get::<_, f64>(4)).collect(),
         volumes: rows.iter().map(|r| r.get::<_, i64>(5) as f64).collect(),
     };
+    let epoch_to_date = |ts: i64| {
+        DateTime::<Utc>::from_timestamp(ts, 0)
+            .map(|dt| dt.date_naive().to_string())
+            .unwrap_or_else(|| "".to_string())
+    };
 
     let train_rows = fetch_candles(&train_from, &train_to).await?;
     if train_rows.is_empty() {
         return Err(format!("No daily candles found for {} {} in {} to {}", security_id, exchange_segment, train_from, train_to));
     }
+    let train_epochs: Vec<i64> = train_rows.iter().map(|r| r.get::<_, i64>(0)).collect();
     let train_candles = to_candles(train_rows);
 
     let indicator_series = compute_indicators(&train_candles, &indicator_specs);
-    let (mut states, feature_names) = build_state_matrix(&train_candles, &indicator_series, lookback);
-    let (means, stds) = normalise_with_stats(&mut states);
+    let (raw_states, feature_names, candle_indices) = build_state_matrix_with_indices(&train_candles, &indicator_series, lookback);
+    if raw_states.nrows() == 0 {
+        return Err(format!("Not enough usable candles after indicator warmup for {} {} in {} to {}", security_id, exchange_segment, train_from, train_to));
+    }
+    let (train_end, val_end) = split_points(raw_states.nrows());
+    let mut train_fit_states = raw_states.slice(ndarray::s![..train_end, ..]).to_owned();
+    let (means, stds) = normalise_with_stats(&mut train_fit_states);
+    let mut states = raw_states;
+    apply_normalisation_stats(&mut states, &means, &stds)?;
 
     let cfg = TrainConfig {
-        max_episodes: 500,
+        max_episodes: 2000,
         episode_steps: states.nrows().min(200),
+        validation_interval: 10,
+        early_stopping_patience: 100,
+        min_delta: 1e-6,
+        grad_clip_norm: 1.0,
         lr: 3e-4,
         gamma: 0.99,
         allow_short,
@@ -759,25 +785,11 @@ async fn process_rl_job(
         max_trades_per_month,
     };
 
-    let result = rl_train(&states, &train_candles.closes, lookback, &cfg, &charges);
+    let result = rl_train(&states, &train_candles.closes, &candle_indices, &cfg, &charges);
 
     let weights = weights_to_bytes(&result.net);
     let weights_key = format!("strategies/{}/weights.bin", strategy_id);
     upload(s3, bucket, &weights_key, weights).await?;
-
-    // Evaluate on held-out test set if provided
-    let test_pnl: Option<f64> = if let (Some(ref tf), Some(ref tt)) = (test_from, test_to) {
-        let test_rows = fetch_candles(tf, tt).await?;
-        if !test_rows.is_empty() {
-            let test_candles = to_candles(test_rows);
-            let test_ind = compute_indicators(&test_candles, &indicator_specs);
-            let (mut test_states, _) = build_state_matrix(&test_candles, &test_ind, lookback);
-            normalise_with_stats(&mut test_states);
-            if test_states.nrows() > 0 {
-                Some(rl::train::evaluate(&result.net, &test_states, &test_candles.closes, lookback, allow_short, &charges))
-            } else { None }
-        } else { None }
-    } else { None };
 
     let raw_imp = feature_importance(&result.net, &states);
     let norm_imp = normalise_importance(&raw_imp);
@@ -791,14 +803,33 @@ async fn process_rl_job(
     let rust_snippet = net_to_rust(
         &result.net, &indicator_specs, lookback, &means, &stds, allow_short,
     );
+    let split_date = |state_row: usize| -> String {
+        candle_indices.get(state_row)
+            .and_then(|&idx| train_epochs.get(idx))
+            .map(|&ts| epoch_to_date(ts))
+            .unwrap_or_default()
+    };
 
     let rl_summary = serde_json::json!({
         "feature_importance": feature_importance_json,
         "approximate_rules": approx_rules,
         "training_episodes": result.episodes,
+        "best_episode": result.best_episode,
         "final_train_reward": result.final_train_reward,
+        "train_pnl": result.train_pnl,
         "val_pnl": result.val_pnl,
-        "test_pnl": test_pnl,
+        "test_pnl": result.test_pnl,
+        "split": {
+            "train_from": split_date(0),
+            "train_to": split_date(train_end.saturating_sub(1)),
+            "val_from": split_date(train_end),
+            "val_to": split_date(val_end.saturating_sub(1)),
+            "test_from": split_date(val_end),
+            "test_to": split_date(states.nrows().saturating_sub(1)),
+            "train_rows": train_end,
+            "val_rows": val_end.saturating_sub(train_end),
+            "test_rows": states.nrows().saturating_sub(val_end),
+        },
     });
 
     db.execute(

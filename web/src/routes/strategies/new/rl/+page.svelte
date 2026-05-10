@@ -24,10 +24,31 @@
 	let lookback_candles = $state(20)
 	let train_from = $state('')
 	let train_to = $state('')
-	let test_from = $state('')
-	let test_to = $state('')
 	let selectedIndicators: string[] = $state(['rsi', 'sma'])
 	let constraints: RLConstraint[] = $state([])
+
+	function fmtDate(d: Date) {
+		return d.toISOString().slice(0, 10)
+	}
+
+	function splitPreview(from: string, to: string) {
+		if (!from || !to || from > to) return null
+		const start = new Date(`${from}T00:00:00Z`)
+		const end = new Date(`${to}T00:00:00Z`)
+		const days = Math.floor((end.getTime() - start.getTime()) / 86400000) + 1
+		if (days < 3) return null
+		const trainDays = Math.max(1, Math.floor(days * 0.7))
+		const valDays = Math.max(1, Math.floor(days * 0.15))
+		const trainEnd = new Date(start); trainEnd.setUTCDate(start.getUTCDate() + trainDays - 1)
+		const valStart = new Date(trainEnd); valStart.setUTCDate(trainEnd.getUTCDate() + 1)
+		const valEnd = new Date(valStart); valEnd.setUTCDate(valStart.getUTCDate() + valDays - 1)
+		const testStart = new Date(valEnd); testStart.setUTCDate(valEnd.getUTCDate() + 1)
+		return {
+			train: `${fmtDate(start)} → ${fmtDate(trainEnd)}`,
+			val: `${fmtDate(valStart)} → ${fmtDate(valEnd)}`,
+			test: `${fmtDate(testStart)} → ${fmtDate(end)}`,
+		}
+	}
 
 	function toggleIndicator(name: string) {
 		if (selectedIndicators.includes(name)) {
@@ -64,9 +85,9 @@
 		trading_symbol: instrument?.trading_symbol ?? '',
 		train_from,
 		train_to,
-		test_from,
-		test_to,
 	})
+
+	let split = $derived(splitPreview(train_from, train_to))
 </script>
 
 <div class="header">
@@ -158,21 +179,19 @@
 	</div>
 
 	<div class="field">
-		<label>Training data range <span class="label-note">(80% train / 20% validation split applied automatically)</span></label>
+		<label>Learning data range <span class="label-note">(split automatically into train / validation / test)</span></label>
 		<div class="date-row">
 			<input type="date" bind:value={train_from} required />
 			<span>→</span>
 			<input type="date" bind:value={train_to} required />
 		</div>
-	</div>
-
-	<div class="field">
-		<label>Test data range <span class="label-note">(held-out — never seen during training)</span></label>
-		<div class="date-row">
-			<input type="date" bind:value={test_from} required />
-			<span>→</span>
-			<input type="date" bind:value={test_to} required />
-		</div>
+		{#if split}
+			<div class="split-preview">
+				<span>Train {split.train}</span>
+				<span>Validation {split.val}</span>
+				<span>Test {split.test}</span>
+			</div>
+		{/if}
 	</div>
 
 	<input type="hidden" name="rl_config" value={JSON.stringify(rlConfig)} />
@@ -269,6 +288,7 @@
 
 	.date-row { align-items: center; display: flex; gap: 10px; }
 	.date-row span { color: var(--text-muted); }
+	.split-preview { color: var(--text-muted); display: flex; flex-direction: column; font-size: 0.75rem; gap: 4px; }
 
 	.footer { display: flex; gap: 12px; justify-content: flex-end; padding-top: 8px; }
 	.btn-primary {

@@ -82,11 +82,11 @@ pub fn compute_indicators(candles: &Candles, specs: &[IndicatorSpec]) -> Vec<(St
     out
 }
 
-pub fn build_state_matrix(
+pub fn build_state_matrix_with_indices(
     candles: &Candles,
     indicator_series: &[(String, Vec<f64>)],
     lookback: usize,
-) -> (Array2<f64>, Vec<String>) {
+) -> (Array2<f64>, Vec<String>, Vec<usize>) {
     let n = candles.closes.len();
     let ind_count = indicator_series.len();
     let ohlcv_count = 5 * lookback;
@@ -100,6 +100,7 @@ pub fn build_state_matrix(
     }
 
     let mut rows: Vec<Array1<f64>> = vec![];
+    let mut candle_indices: Vec<usize> = vec![];
 
     for i in lookback..n {
         let ind_vals: Vec<f64> = indicator_series.iter().map(|(_, v)| v[i]).collect();
@@ -119,10 +120,11 @@ pub fn build_state_matrix(
             state[off] = candles.volumes[t]; off += 1;
         }
         rows.push(state);
+        candle_indices.push(i);
     }
 
     if rows.is_empty() {
-        return (Array2::zeros((0, state_dim)), feature_names);
+        return (Array2::zeros((0, state_dim)), feature_names, candle_indices);
     }
 
     let nrows = rows.len();
@@ -130,7 +132,7 @@ pub fn build_state_matrix(
     for (i, row) in rows.into_iter().enumerate() {
         mat.row_mut(i).assign(&row);
     }
-    (mat, feature_names)
+    (mat, feature_names, candle_indices)
 }
 
 pub fn normalise_with_stats(mat: &mut Array2<f64>) -> (Vec<f64>, Vec<f64>) {
@@ -149,4 +151,23 @@ pub fn normalise_with_stats(mat: &mut Array2<f64>) -> (Vec<f64>, Vec<f64>) {
         }
     }
     (means, stds)
+}
+
+pub fn apply_normalisation_stats(mat: &mut Array2<f64>, means: &[f64], stds: &[f64]) -> Result<(), String> {
+    if mat.ncols() != means.len() || mat.ncols() != stds.len() {
+        return Err(format!(
+            "normalisation stat dimension mismatch: matrix has {}, means {}, stds {}",
+            mat.ncols(),
+            means.len(),
+            stds.len(),
+        ));
+    }
+
+    for j in 0..mat.ncols() {
+        let std = if stds[j].abs() < 1e-8 { 1.0 } else { stds[j] };
+        for v in mat.column_mut(j).iter_mut() {
+            *v = (*v - means[j]) / std;
+        }
+    }
+    Ok(())
 }

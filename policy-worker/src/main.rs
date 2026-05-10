@@ -48,6 +48,11 @@ struct WasmRunner {
     /// length of closed-candle history; total alloc is history_len + 1
     history_len: usize,
     last_signal: u8,
+    price_ptr: u32,
+    open_ptr: Option<u32>,
+    volume_ptr: Option<u32>,
+    high_ptr: Option<u32>,
+    low_ptr: Option<u32>,
 }
 
 impl WasmRunner {
@@ -74,13 +79,25 @@ impl WasmRunner {
             }
         }
 
-        for (export, slice) in [
-            ("alloc_volume", candles.volumes.as_slice()),
-            ("alloc_high",   candles.highs.as_slice()),
-            ("alloc_low",    candles.lows.as_slice()),
+        let mut open_ptr = None;
+        let mut volume_ptr = None;
+        let mut high_ptr = None;
+        let mut low_ptr = None;
+        for (export, slice, slot) in [
+            ("alloc_open", candles.opens.as_slice(), "open"),
+            ("alloc_volume", candles.volumes.as_slice(), "volume"),
+            ("alloc_high",   candles.highs.as_slice(), "high"),
+            ("alloc_low",    candles.lows.as_slice(), "low"),
         ] {
             if let Ok(f) = instance.get_typed_func::<u32, u32>(&mut store, export) {
                 if let Ok(ptr) = f.call(&mut store, total) {
+                    match slot {
+                        "open" => open_ptr = Some(ptr),
+                        "volume" => volume_ptr = Some(ptr),
+                        "high" => high_ptr = Some(ptr),
+                        "low" => low_ptr = Some(ptr),
+                        _ => {}
+                    }
                     let data = memory.data_mut(&mut store);
                     for (i, &v) in slice.iter().take(n).enumerate() {
                         let off = ptr as usize + i * 8;
@@ -90,32 +107,39 @@ impl WasmRunner {
             }
         }
 
-        Ok(Self { store, instance, history_len: n, last_signal: 0 })
+        Ok(Self {
+            store,
+            instance,
+            history_len: n,
+            last_signal: 0,
+            price_ptr: ptr,
+            open_ptr,
+            volume_ptr,
+            high_ptr,
+            low_ptr,
+        })
     }
 
     /// Update the live price+volume+high+low slot and run signal. Returns Some(signal) on transition.
     fn tick(&mut self, ltp: f64, vol: f64, high: f64, low: f64) -> Result<Option<u8>, String> {
         let memory = self.instance.get_memory(&mut self.store, "memory")
             .ok_or("no memory")?;
-        let alloc_fn = self.instance.get_typed_func::<u32, u32>(&mut self.store, "alloc")
-            .map_err(|e| e.to_string())?;
 
         let total = (self.history_len + 1) as u32;
         let slot = self.history_len;
 
         // Write LTP into last slot
-        let ptr = alloc_fn.call(&mut self.store, total).map_err(|e| e.to_string())?;
         {
             let data = memory.data_mut(&mut self.store);
-            let off = ptr as usize + slot * 8;
+            let off = self.price_ptr as usize + slot * 8;
             data[off..off + 8].copy_from_slice(&ltp.to_le_bytes());
-        }
-
-        // Write live values into optional slots
-        for (export, val) in [("alloc_volume", vol), ("alloc_high", high), ("alloc_low", low)] {
-            if let Ok(f) = self.instance.get_typed_func::<u32, u32>(&mut self.store, export) {
-                if let Ok(p) = f.call(&mut self.store, total) {
-                    let data = memory.data_mut(&mut self.store);
+            for (ptr, val) in [
+                (self.open_ptr, ltp),
+                (self.volume_ptr, vol),
+                (self.high_ptr, high),
+                (self.low_ptr, low),
+            ] {
+                if let Some(p) = ptr {
                     let off = p as usize + slot * 8;
                     data[off..off + 8].copy_from_slice(&val.to_le_bytes());
                 }
@@ -257,6 +281,7 @@ async fn load_active_policies(db: &tokio_postgres::Client, enc_key: &[u8]) -> Ve
 }
 
 struct Candles {
+    opens: Vec<f64>,
     closes: Vec<f64>,
     volumes: Vec<f64>,
     highs: Vec<f64>,
@@ -270,16 +295,17 @@ async fn fetch_candles(
     interval: &str,
 ) -> Candles {
     let rows = db.query(
-        "select close::float8, volume::float8, high::float8, low::float8 from candles
+        "select open::float8, close::float8, volume::float8, high::float8, low::float8 from candles
          where security_id=$1 and exchange_segment=$2 and interval=$3
          order by timestamp",
         &[&security_id, &exchange_segment, &interval],
     ).await.unwrap_or_default();
     Candles {
-        closes:  rows.iter().map(|r| r.get::<_, f64>(0)).collect(),
-        volumes: rows.iter().map(|r| r.get::<_, f64>(1)).collect(),
-        highs:   rows.iter().map(|r| r.get::<_, f64>(2)).collect(),
-        lows:    rows.iter().map(|r| r.get::<_, f64>(3)).collect(),
+        opens:   rows.iter().map(|r| r.get::<_, f64>(0)).collect(),
+        closes:  rows.iter().map(|r| r.get::<_, f64>(1)).collect(),
+        volumes: rows.iter().map(|r| r.get::<_, f64>(2)).collect(),
+        highs:   rows.iter().map(|r| r.get::<_, f64>(3)).collect(),
+        lows:    rows.iter().map(|r| r.get::<_, f64>(4)).collect(),
     }
 }
 

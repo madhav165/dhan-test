@@ -23,13 +23,10 @@ export const actions: Actions = {
 			return fail(400, { error: 'Instrument is required' })
 		}
 		if (!rl_config.train_from || !rl_config.train_to) {
-			return fail(400, { error: 'Training date range is required' })
+			return fail(400, { error: 'Learning date range is required' })
 		}
-		if (!rl_config.test_from || !rl_config.test_to) {
-			return fail(400, { error: 'Test date range is required' })
-		}
-		if (rl_config.test_from <= rl_config.train_to) {
-			return fail(400, { error: 'Test range must start after training range ends' })
+		if (rl_config.train_from > rl_config.train_to) {
+			return fail(400, { error: 'Learning range end must be after start' })
 		}
 
 		const stratResult = await db.query(

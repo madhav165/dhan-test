@@ -15,10 +15,10 @@ export type RLConfig = {
 	security_id: string
 	exchange_segment: string
 	trading_symbol: string
-	train_from: string  // YYYY-MM-DD
-	train_to: string    // YYYY-MM-DD
-	test_from: string   // YYYY-MM-DD — held-out period, never seen during training
-	test_to: string     // YYYY-MM-DD
+	train_from: string  // YYYY-MM-DD, full learning range start
+	train_to: string    // YYYY-MM-DD, full learning range end
+	test_from?: string  // legacy configs only
+	test_to?: string    // legacy configs only
 }
 
 export type FeatureImportance = {
@@ -30,7 +30,20 @@ export type RLSummary = {
 	feature_importance: FeatureImportance[]
 	approximate_rules: string  // human-readable decision tree text
 	training_episodes: number
+	best_episode?: number
 	final_train_reward: number
-	val_pnl: number       // PnL on the 20% validation split (last 20% of train range)
-	test_pnl: number | null  // PnL on held-out test range; null if not configured
+	train_pnl?: number
+	val_pnl: number       // absolute PnL per unit on the validation split
+	test_pnl: number | null  // absolute PnL per unit on the final holdout split
+	split?: {
+		train_from: string
+		train_to: string
+		val_from: string
+		val_to: string
+		test_from: string
+		test_to: string
+		train_rows: number
+		val_rows: number
+		test_rows: number
+	}
 }

@@ -179,8 +179,9 @@ pub fn net_to_rust(
     lines.push(format!("    let mut off = {};", num_inds));
     lines.push(format!("    for lag in 1_usize..={} {{", lookback));
     lines.push("        let t = i - lag;".into());
-    // open not available in WASM — use close as proxy (col 0)
-    lines.push("        let raw = [prices[t], highs[t], lows[t], prices[t], volumes[t]];".into());
+    // Use close as a fallback for older WASM callers that do not provide opens.
+    lines.push("        let open = if opens.len() > t { opens[t] } else { prices[t] };".into());
+    lines.push("        let raw = [open, highs[t], lows[t], prices[t], volumes[t]];".into());
     lines.push("        for k in 0..5_usize { feat[off+k] = (raw[k] - means[off+k]) / stds[off+k]; }".into());
     lines.push("        off += 5;".into());
     lines.push("    }".into());

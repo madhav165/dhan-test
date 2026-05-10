@@ -4,6 +4,7 @@ use rand::Rng;
 pub type Action = u8; // 0 = hold, 1 = buy, 2 = sell/short
 
 // 2-layer MLP: input → tanh → tanh → softmax over 3 actions
+#[derive(Clone)]
 pub struct MLP {
     pub w1: Vec<f64>,   // hidden × input
     pub b1: Vec<f64>,   // hidden
@@ -190,6 +191,24 @@ impl Grads {
             w_out: vec![0.0; net.w_out.len()], b_out: vec![0.0; net.b_out.len()],
         }
     }
+
+    fn clip_global_norm(&mut self, max_norm: f64) {
+        let sum_sq = self.w1.iter().chain(&self.b1)
+            .chain(&self.w2).chain(&self.b2)
+            .chain(&self.w_out).chain(&self.b_out)
+            .map(|v| v * v)
+            .sum::<f64>();
+        let norm = sum_sq.sqrt();
+        if norm <= max_norm || norm < 1e-12 {
+            return;
+        }
+        let scale = max_norm / norm;
+        for v in self.w1.iter_mut().chain(&mut self.b1)
+            .chain(&mut self.w2).chain(&mut self.b2)
+            .chain(&mut self.w_out).chain(&mut self.b_out) {
+            *v *= scale;
+        }
+    }
 }
 
 pub struct AdamState {
@@ -236,6 +255,10 @@ impl BrokerCharges {
 pub struct TrainConfig {
     pub max_episodes: usize,
     pub episode_steps: usize,
+    pub validation_interval: usize,
+    pub early_stopping_patience: usize,
+    pub min_delta: f64,
+    pub grad_clip_norm: f64,
     pub lr: f64,
     pub gamma: f64,
     pub allow_short: bool,
@@ -251,6 +274,10 @@ impl Default for TrainConfig {
         Self {
             max_episodes: 500,
             episode_steps: 200,
+            validation_interval: 10,
+            early_stopping_patience: 50,
+            min_delta: 1e-6,
+            grad_clip_norm: 1.0,
             lr: 3e-4,
             gamma: 0.99,
             allow_short: false,
@@ -270,9 +297,20 @@ fn compute_returns(rewards: &[f64], gamma: f64) -> Vec<f64> {
         g = rewards[i] + gamma * g;
         returns[i] = g;
     }
-    // baseline: subtract mean to reduce variance
+    // baseline: standardise advantages to reduce variance and scale sensitivity
     let mean = returns.iter().sum::<f64>() / returns.len() as f64;
-    returns.iter().map(|r| r - mean).collect()
+    let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / returns.len() as f64;
+    let std = var.sqrt().max(1e-8);
+    returns.iter().map(|r| (r - mean) / std).collect()
+}
+
+pub fn split_points(n: usize) -> (usize, usize) {
+    if n < 3 {
+        return (n.max(1), n);
+    }
+    let train_end = ((n as f64 * 0.70).floor() as usize).clamp(1, n - 2);
+    let val_end = ((n as f64 * 0.85).floor() as usize).clamp(train_end + 1, n - 1);
+    (train_end, val_end)
 }
 
 fn step_reward(
@@ -290,37 +328,33 @@ fn step_reward(
     match (*position, action) {
         (0, 1) => {
             *position = 1; *entry_price = price; *holding = 0; *trades += 1;
-            reward -= charges.cost(price, price) / price.max(1e-8);
         }
         (0, 2) if config.allow_short => {
             *position = -1; *entry_price = price; *holding = 0; *trades += 1;
-            reward -= charges.cost(price, price) / price.max(1e-8);
         }
         (1, 0) | (1, 2) => {
-            reward += (price - *entry_price) / entry_price.max(1e-8)
-                - charges.cost(*entry_price, price) / entry_price.max(1e-8);
+            reward += (price - *entry_price) - charges.cost(*entry_price, price);
+            *trades += 1;
             *position = 0; *holding = 0;
             if action == 2 && config.allow_short {
                 *position = -1; *entry_price = price; *trades += 1;
-                reward -= charges.cost(price, price) / price.max(1e-8);
             }
         }
         (-1, 0) | (-1, 1) => {
-            reward += (*entry_price - price) / entry_price.max(1e-8)
-                - charges.cost(price, *entry_price) / entry_price.max(1e-8);
+            reward += (*entry_price - price) - charges.cost(price, *entry_price);
+            *trades += 1;
             *position = 0; *holding = 0;
             if action == 1 {
                 *position = 1; *entry_price = price; *trades += 1;
-                reward -= charges.cost(price, price) / price.max(1e-8);
             }
         }
-        _ => { *holding += 1; }
+        _ => {}
     }
 
     if *position != 0 { *holding += 1; }
 
     if let (Some(max_d), Some(w)) = (config.max_holding_days, config.penalty_holding_days) {
-        let d = *holding as f64 / 26.0;
+        let d = *holding as f64;
         if d > max_d as f64 { reward -= w * (d - max_d as f64); }
     }
     if let (Some(max_t), Some(w)) = (config.max_trades_per_month, config.penalty_trades_per_month) {
@@ -336,7 +370,7 @@ fn rollout(
     net: &MLP,
     states: &Array2<f64>,
     closes: &[f64],
-    state_offset: usize,
+    candle_indices: &[usize],
     config: &TrainConfig,
     charges: &BrokerCharges,
     rng: &mut impl Rng,
@@ -349,39 +383,88 @@ fn rollout(
     let mut steps = vec![];
     let mut rewards = vec![];
 
+    let start = if states.nrows() > n {
+        rng.random_range(0..=(states.nrows() - n))
+    } else {
+        0
+    };
+
     for t in 0..n {
-        let state: Vec<f64> = states.row(t).to_vec();
+        let row_idx = start + t;
+        let state: Vec<f64> = states.row(row_idx).to_vec();
         let (action, _) = net.sample_action(&state, rng, config.allow_short);
-        let price = closes[state_offset + t];
+        let price = closes[candle_indices[row_idx]];
         let r = step_reward(action, &mut position, &mut entry_price, &mut holding, &mut trades, price, config, charges);
         steps.push(Step { state, action, ret: 0.0 });
         rewards.push(r);
     }
 
-    let returns = compute_returns(&rewards, config.gamma);
-    let episode_return = rewards.iter().sum::<f64>();
+    let (returns, episode_return) = objective_returns(&rewards, config);
     for (s, r) in steps.iter_mut().zip(returns) { s.ret = r; }
     (steps, episode_return)
+}
+
+fn objective_returns(rewards: &[f64], config: &TrainConfig) -> (Vec<f64>, f64) {
+    if rewards.is_empty() {
+        return (vec![], 0.0);
+    }
+
+    match config.reward_type.as_str() {
+        "sharpe" => {
+            let mean = rewards.iter().sum::<f64>() / rewards.len() as f64;
+            let var = rewards.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / rewards.len() as f64;
+            let objective = if var < 1e-12 { 0.0 } else { mean / var.sqrt() };
+            (compute_returns(rewards, config.gamma), objective)
+        }
+        "min_drawdown" => {
+            let mut equity = 0.0f64;
+            let mut peak = 0.0f64;
+            let mut max_dd = 0.0f64;
+            let mut shaped = Vec::with_capacity(rewards.len());
+            for r in rewards {
+                equity += r;
+                if equity > peak { peak = equity; }
+                let dd = peak - equity;
+                let dd_increase = (dd - max_dd).max(0.0);
+                max_dd = max_dd.max(dd);
+                shaped.push(*r - dd_increase);
+            }
+            let objective = -max_dd;
+            (compute_returns(&shaped, config.gamma), objective)
+        }
+        _ => {
+            let episode_return = rewards.iter().sum::<f64>();
+            (compute_returns(rewards, config.gamma), episode_return)
+        }
+    }
 }
 
 pub struct TrainResult {
     pub net: MLP,
     pub final_train_reward: f64,
+    pub train_pnl: f64,
     pub val_pnl: f64,
+    pub test_pnl: f64,
     pub episodes: usize,
+    pub best_episode: usize,
 }
 
 pub fn train(
     states: &Array2<f64>,
     closes: &[f64],
-    state_offset: usize,
+    candle_indices: &[usize],
     config: &TrainConfig,
     charges: &BrokerCharges,
 ) -> TrainResult {
     let n = states.nrows();
-    let train_end = ((n as f64 * 0.8) as usize).max(1);
+    assert_eq!(n, candle_indices.len(), "state rows and candle indices must match");
+    let (train_end, val_end) = split_points(n);
     let train_states = states.slice(ndarray::s![..train_end, ..]).to_owned();
-    let val_states = states.slice(ndarray::s![train_end.., ..]).to_owned();
+    let val_states = states.slice(ndarray::s![train_end..val_end, ..]).to_owned();
+    let test_states = states.slice(ndarray::s![val_end.., ..]).to_owned();
+    let train_indices = &candle_indices[..train_end];
+    let val_indices = &candle_indices[train_end..val_end];
+    let test_indices = &candle_indices[val_end..];
 
     let input_size = states.ncols();
     let hidden_size = 32; // smaller = faster, still expressive enough
@@ -390,10 +473,22 @@ pub fn train(
     let mut v = AdamState::zero(&net);
     let mut rng = rand::rng();
     let mut final_train_reward = 0.0f64;
+    let mut reward_ema: Option<f64> = None;
+    let mut best_net = net.clone();
+    let mut best_val_pnl = f64::NEG_INFINITY;
+    let mut best_episode = 0usize;
+    let mut episodes_since_best = 0usize;
+    let mut episodes_run = 0usize;
+    let validation_interval = config.validation_interval.max(1);
 
     for ep in 0..config.max_episodes {
-        let (steps, episode_return) = rollout(&net, &train_states, closes, state_offset, config, charges, &mut rng);
-        final_train_reward = episode_return;
+        episodes_run = ep + 1;
+        let (steps, episode_return) = rollout(&net, &train_states, closes, train_indices, config, charges, &mut rng);
+        reward_ema = Some(match reward_ema {
+            Some(prev) => 0.95 * prev + 0.05 * episode_return,
+            None => episode_return,
+        });
+        final_train_reward = reward_ema.unwrap_or(episode_return);
 
         let mut grads = Grads::zero(&net);
         for step in &steps {
@@ -404,29 +499,55 @@ pub fn train(
         macro_rules! norm { ($v:expr) => { for x in $v.iter_mut() { *x /= n_steps; } }; }
         norm!(grads.w1); norm!(grads.b1); norm!(grads.w2); norm!(grads.b2);
         norm!(grads.w_out); norm!(grads.b_out);
+        grads.clip_global_norm(config.grad_clip_norm);
 
         net.apply_adam(&grads, &mut m, &mut v, ep + 1, config.lr);
 
         eprintln!("rl train: episode {}/{} return={:.4}", ep, config.max_episodes, final_train_reward);
+
+        if val_states.nrows() > 0 && ((ep + 1) % validation_interval == 0 || ep + 1 == config.max_episodes) {
+            let val_pnl = evaluate(&net, &val_states, closes, val_indices, config.allow_short, charges);
+            if val_pnl > best_val_pnl + config.min_delta {
+                best_val_pnl = val_pnl;
+                best_net = net.clone();
+                best_episode = ep + 1;
+                episodes_since_best = 0;
+            } else {
+                episodes_since_best += validation_interval;
+                if episodes_since_best >= config.early_stopping_patience {
+                    eprintln!("rl train: early stopping at episode {} best_episode={} best_val_pnl={:.4}", ep + 1, best_episode, best_val_pnl);
+                    break;
+                }
+            }
+        }
     }
 
-    let val_pnl = if val_states.nrows() > 0 {
-        evaluate(&net, &val_states, closes, state_offset + train_end, config.allow_short, charges)
-    } else { 0.0 };
+    if best_episode > 0 {
+        net = best_net;
+    }
 
-    eprintln!("rl train: done. val_pnl={:.4}", val_pnl);
-    TrainResult { net, final_train_reward, val_pnl, episodes: config.max_episodes }
+    let train_pnl = evaluate(&net, &train_states, closes, train_indices, config.allow_short, charges);
+
+    let val_pnl = if val_states.nrows() > 0 {
+        evaluate(&net, &val_states, closes, val_indices, config.allow_short, charges)
+    } else { 0.0 };
+    let test_pnl = if test_states.nrows() > 0 {
+        evaluate(&net, &test_states, closes, test_indices, config.allow_short, charges)
+    } else { 0.0 };
+    eprintln!("rl train: done. train_pnl={:.4} val_pnl={:.4} test_pnl={:.4}", train_pnl, val_pnl, test_pnl);
+    TrainResult { net, final_train_reward, train_pnl, val_pnl, test_pnl, episodes: episodes_run, best_episode }
 }
 
 pub fn evaluate(
     net: &MLP,
     states: &Array2<f64>,
     closes: &[f64],
-    state_offset: usize,
+    candle_indices: &[usize],
     allow_short: bool,
     charges: &BrokerCharges,
 ) -> f64 {
     let n = states.nrows();
+    assert_eq!(n, candle_indices.len(), "state rows and candle indices must match");
     let mut position: i8 = 0;
     let mut entry_price = 0.0f64;
     let mut total_pnl = 0.0f64;
@@ -434,20 +555,18 @@ pub fn evaluate(
     for t in 0..n {
         let state = states.row(t).to_vec();
         let action = net.greedy_action(&state, allow_short);
-        let price = closes[state_offset + t];
+        let price = closes[candle_indices[t]];
 
         match (position, action) {
             (0, 1) => { position = 1; entry_price = price; }
             (0, 2) if allow_short => { position = -1; entry_price = price; }
             (1, 0) | (1, 2) => {
-                total_pnl += (price - entry_price) / entry_price.max(1e-8)
-                    - charges.cost(entry_price, price) / entry_price.max(1e-8);
+                total_pnl += (price - entry_price) - charges.cost(entry_price, price);
                 position = 0;
                 if action == 2 && allow_short { position = -1; entry_price = price; }
             }
             (-1, 0) | (-1, 1) => {
-                total_pnl += (entry_price - price) / entry_price.max(1e-8)
-                    - charges.cost(price, entry_price) / entry_price.max(1e-8);
+                total_pnl += (entry_price - price) - charges.cost(price, entry_price);
                 position = 0;
                 if action == 1 { position = 1; entry_price = price; }
             }
@@ -455,13 +574,11 @@ pub fn evaluate(
         }
     }
     if position != 0 && n > 0 {
-        let last = closes[state_offset + n - 1];
+        let last = closes[candle_indices[n - 1]];
         if position == 1 {
-            total_pnl += (last - entry_price) / entry_price.max(1e-8)
-                - charges.cost(entry_price, last) / entry_price.max(1e-8);
+            total_pnl += (last - entry_price) - charges.cost(entry_price, last);
         } else {
-            total_pnl += (entry_price - last) / entry_price.max(1e-8)
-                - charges.cost(last, entry_price) / entry_price.max(1e-8);
+            total_pnl += (entry_price - last) - charges.cost(last, entry_price);
         }
     }
     total_pnl

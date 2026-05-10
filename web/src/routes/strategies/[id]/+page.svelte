@@ -56,6 +56,19 @@
 {#if strategy.strategy_type === 'rl'}
 	<section class="rl-section">
 		<h2>RL Training</h2>
+		{#if strategy.rl_summary?.split}
+			{@const split = strategy.rl_summary.split}
+			<p class="split-note">
+				Train: {split.train_from} → {split.train_to} ({split.train_rows} rows)
+				<span>Validation: {split.val_from} → {split.val_to} ({split.val_rows} rows)</span>
+				<span>Test: {split.test_from} → {split.test_to} ({split.test_rows} rows)</span>
+			</p>
+		{:else if strategy.rl_config}
+			<p class="split-note">
+				Learning range: {strategy.rl_config.train_from} → {strategy.rl_config.train_to}
+				<span>Split: 70% train / 15% validation / 15% test</span>
+			</p>
+		{/if}
 
 		{#if strategy.rl_job?.status === 'pending' || strategy.rl_job?.status === 'training'}
 			<p class="status-badge training">Training in progress…</p>
@@ -66,8 +79,16 @@
 			<div class="summary-grid">
 				<div class="summary-item">
 					<span class="summary-label">Episodes</span>
-					<span class="summary-value">{summary.training_episodes}</span>
+					<span class="summary-value">{summary.training_episodes}{summary.best_episode ? ` best ${summary.best_episode}` : ''}</span>
 				</div>
+				{#if summary.train_pnl != null}
+				<div class="summary-item">
+					<span class="summary-label">Train PnL</span>
+					<span class="summary-value" class:pos={summary.train_pnl > 0} class:neg={summary.train_pnl < 0}>
+						{summary.train_pnl.toFixed(2)}
+					</span>
+				</div>
+				{/if}
 				<div class="summary-item">
 					<span class="summary-label">Train reward</span>
 					<span class="summary-value">{summary.final_train_reward?.toFixed(4) ?? '—'}</span>
@@ -75,14 +96,14 @@
 				<div class="summary-item">
 					<span class="summary-label">Val PnL</span>
 					<span class="summary-value" class:pos={summary.val_pnl > 0} class:neg={summary.val_pnl < 0}>
-						{summary.val_pnl != null ? (summary.val_pnl * 100).toFixed(2) + '%' : '—'}
+						{summary.val_pnl != null ? summary.val_pnl.toFixed(2) : '—'}
 					</span>
 				</div>
 				{#if summary.test_pnl != null}
 				<div class="summary-item">
 					<span class="summary-label">Test PnL</span>
 					<span class="summary-value" class:pos={summary.test_pnl > 0} class:neg={summary.test_pnl < 0}>
-						{(summary.test_pnl * 100).toFixed(2)}%
+						{summary.test_pnl.toFixed(2)}
 					</span>
 				</div>
 				{/if}
@@ -316,6 +337,7 @@
 	.rl-section { margin-bottom: 32px; }
 	.rl-section h2 { color: var(--text-muted); font-size: 0.8rem; font-weight: 600; letter-spacing: 0.06em; margin: 0 0 12px; text-transform: uppercase; }
 	.rl-section h3 { color: var(--text-muted); font-size: 0.8rem; font-weight: 600; margin: 16px 0 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+	.split-note { color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 8px 14px; font-size: 0.75rem; margin: -4px 0 14px; }
 
 	.status-badge { border-radius: 4px; display: inline-block; font-size: 0.85rem; padding: 6px 12px; }
 	.status-badge.training { background: #1e40af22; color: #60a5fa; }
