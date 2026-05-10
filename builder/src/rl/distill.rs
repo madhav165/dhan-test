@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use ndarray::Array2;
 use crate::rl::train::MLP;
 use crate::rl::features::IndicatorSpec;
@@ -116,35 +115,12 @@ fn build_tree(states: &[Vec<f64>], actions: &[f64], depth: usize, max_depth: usi
     }
 }
 
-fn collect_features(node: &TreeNode, used: &mut BTreeSet<usize>) {
-    if let TreeNode::Split { feature, left, right, .. } = node {
-        used.insert(*feature);
-        collect_features(left, used);
-        collect_features(right, used);
-    }
+fn fmt_slice(v: &[f64]) -> String {
+    let vals: Vec<String> = v.iter().map(|x| format!("{:.10}_f64", x)).collect();
+    format!("&[{}]", vals.join(","))
 }
 
-fn tree_to_rust(node: &TreeNode, depth: usize) -> String {
-    let indent = "    ".repeat(depth + 1);
-    match node {
-        TreeNode::Leaf { action_mean } => {
-            let sig: u8 = if *action_mean > 0.5 { 1 } else if *action_mean < -0.5 { 2 } else { 0 };
-            format!("{}{}u8", indent, sig)
-        }
-        TreeNode::Split { feature, threshold, left, right } => {
-            format!(
-                "{}if f{} <= {:.10}_f64 {{\n{}\n{}}} else {{\n{}\n{}}}",
-                indent, feature, threshold,
-                tree_to_rust(left, depth + 1),
-                indent,
-                tree_to_rust(right, depth + 1),
-                indent,
-            )
-        }
-    }
-}
-
-fn indicator_vec_expr(spec: &IndicatorSpec) -> String {
+fn indicator_expr(spec: &IndicatorSpec) -> String {
     match spec {
         IndicatorSpec::Rsi { period } => format!("rsi(prices, {})", period),
         IndicatorSpec::Sma { period } => format!("sma(prices, {})", period),
@@ -152,12 +128,12 @@ fn indicator_vec_expr(spec: &IndicatorSpec) -> String {
         IndicatorSpec::Wma { period } => format!("wma(prices, {})", period),
         IndicatorSpec::Vwap => "vwap(prices, volumes)".into(),
         IndicatorSpec::Macd { component, fast, slow, signal_period } => {
-            let pick = match component.as_str() { "signal" => "1", "histogram" => "2", _ => "0" };
-            format!("{{ let t = macd(prices, {}, {}, {}); [t.0, t.1, t.2][{}].clone() }}", fast, slow, signal_period, pick)
+            let pat = match component.as_str() { "signal" => "(_, v, _)", "histogram" => "(_, _, v)", _ => "(v, _, _)" };
+            format!("{{ let {} = macd(prices, {}, {}, {}); v }}", pat, fast, slow, signal_period)
         }
         IndicatorSpec::Bb { component, period } => {
-            let pick = match component.as_str() { "middle" => "1", "lower" => "2", _ => "0" };
-            format!("{{ let t = bb(prices, {}); [t.0, t.1, t.2][{}].clone() }}", period, pick)
+            let pat = match component.as_str() { "middle" => "(_, v, _)", "lower" => "(_, _, v)", _ => "(v, _, _)" };
+            format!("{{ let {} = bb(prices, {}); v }}", pat, period)
         }
         IndicatorSpec::Atr { period } => format!("atr(highs, lows, prices, {})", period),
         IndicatorSpec::Stoch { period } => format!("stoch(highs, lows, prices, {})", period),
@@ -166,60 +142,65 @@ fn indicator_vec_expr(spec: &IndicatorSpec) -> String {
     }
 }
 
-pub fn distil_to_rust(
+pub fn net_to_rust(
     net: &MLP,
-    states: &Array2<f64>,
-    feature_names: &[String],
     indicator_specs: &[IndicatorSpec],
     lookback: usize,
     means: &[f64],
     stds: &[f64],
-    max_depth: usize,
+    allow_short: bool,
 ) -> String {
-    let n = states.nrows();
-    if n == 0 { return "0u8".into(); }
-
-    let state_vecs: Vec<Vec<f64>> = (0..n).map(|i| states.row(i).to_vec()).collect();
-    let scores: Vec<f64> = state_vecs.iter().map(|s| dominant_logit(net, s)).collect();
-    let tree = build_tree(&state_vecs, &scores, 0, max_depth);
-
-    let mut used = BTreeSet::new();
-    collect_features(&tree, &mut used);
-
     let num_inds = indicator_specs.len();
+    let state_dim = num_inds + 5 * lookback;
     let mut lines: Vec<String> = vec![];
 
     lines.push(format!("    if i < {} {{ return 0; }}", lookback));
 
-    for &idx in &used {
-        let mean = means.get(idx).copied().unwrap_or(0.0);
-        let std = stds.get(idx).copied().unwrap_or(1.0);
-        if idx < num_inds {
-            let expr = indicator_vec_expr(&indicator_specs[idx]);
-            lines.push(format!(
-                "    let f{} = {{ let v = {}; if v[i].is_nan() {{ return 0; }} (v[i] - {:.10}_f64) / {:.10}_f64 }};",
-                idx, expr, mean, std
-            ));
-        } else {
-            let rel = idx - num_inds;
-            let lag = rel / 5 + 1;
-            let col = rel % 5;
-            let raw = match col {
-                0 | 3 => format!("prices[i - {}]", lag),
-                1 => format!("highs[i - {}]", lag),
-                2 => format!("lows[i - {}]", lag),
-                4 => format!("volumes[i - {}]", lag),
-                _ => "0.0".into(),
-            };
-            lines.push(format!(
-                "    let f{} = ({} - {:.10}_f64) / {:.10}_f64;",
-                idx, raw, mean, std
-            ));
-        }
-        let _ = feature_names; // used for human-readable distil only
+    // Embed weights and normalization stats
+    lines.push(format!("    let w1: &[f64] = {};", fmt_slice(&net.w1)));
+    lines.push(format!("    let b1: &[f64] = {};", fmt_slice(&net.b1)));
+    lines.push(format!("    let w2: &[f64] = {};", fmt_slice(&net.w2)));
+    lines.push(format!("    let b2: &[f64] = {};", fmt_slice(&net.b2)));
+    lines.push(format!("    let w_out: &[f64] = {};", fmt_slice(&net.w_out)));
+    lines.push(format!("    let b_out: &[f64] = {};", fmt_slice(&net.b_out)));
+    lines.push(format!("    let means: &[f64] = {};", fmt_slice(means)));
+    lines.push(format!("    let stds: &[f64] = {};", fmt_slice(stds)));
+    lines.push(format!("    let hidden = {};", net.hidden_size));
+    lines.push(format!("    let input = {};", net.input_size));
+
+    // Build and normalize feature vector — same ordering as build_state_matrix
+    lines.push(format!("    let mut feat = vec![0.0_f64; {}];", state_dim));
+    for (idx, spec) in indicator_specs.iter().enumerate() {
+        let expr = indicator_expr(spec);
+        lines.push(format!(
+            "    feat[{idx}] = {{ let v = {expr}; if v[i].is_nan() {{ return 0; }} (v[i] - means[{idx}]) / stds[{idx}] }};"
+        ));
+    }
+    lines.push(format!("    let mut off = {};", num_inds));
+    lines.push(format!("    for lag in 1_usize..={} {{", lookback));
+    lines.push("        let t = i - lag;".into());
+    // open not available in WASM — use close as proxy (col 0)
+    lines.push("        let raw = [prices[t], highs[t], lows[t], prices[t], volumes[t]];".into());
+    lines.push("        for k in 0..5_usize { feat[off+k] = (raw[k] - means[off+k]) / stds[off+k]; }".into());
+    lines.push("        off += 5;".into());
+    lines.push("    }".into());
+
+    // Forward pass: input -> tanh -> tanh -> softmax
+    lines.push("    let mm = |w: &[f64], x: &[f64], r: usize, c: usize| -> Vec<f64> { (0..r).map(|i| (0..c).map(|j| w[i*c+j]*x[j]).sum::<f64>()).collect() };".into());
+    lines.push("    let h1: Vec<f64> = mm(w1,&feat,hidden,input).into_iter().zip(b1).map(|(v,b)| (v+b).tanh()).collect();".into());
+    lines.push("    let h2: Vec<f64> = mm(w2,&h1,hidden,hidden).into_iter().zip(b2).map(|(v,b)| (v+b).tanh()).collect();".into());
+    lines.push("    let lo: Vec<f64> = mm(w_out,&h2,3,hidden).into_iter().zip(b_out).map(|(v,b)| v+b).collect();".into());
+    lines.push("    let mx = lo.iter().cloned().fold(f64::NEG_INFINITY, f64::max);".into());
+    lines.push("    let ex: Vec<f64> = lo.iter().map(|v| (v-mx).exp()).collect();".into());
+    lines.push("    let s: f64 = ex.iter().sum();".into());
+    lines.push("    let p = [ex[0]/s, ex[1]/s, ex[2]/s];".into());
+
+    if allow_short {
+        lines.push("    if p[1] >= p[0] && p[1] >= p[2] { 1u8 } else if p[2] >= p[0] { 2u8 } else { 0u8 }".into());
+    } else {
+        lines.push("    if p[1] >= p[0] { 1u8 } else { 0u8 }".into());
     }
 
-    lines.push(tree_to_rust(&tree, 0));
     lines.join("\n")
 }
 

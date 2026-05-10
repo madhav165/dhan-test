@@ -1,7 +1,7 @@
 mod rl;
 use rl::features::{Candles, IndicatorSpec, compute_indicators, build_state_matrix, normalise_with_stats};
 use rl::train::{TrainConfig, train as rl_train, weights_to_bytes};
-use rl::distill::{feature_importance, normalise_importance, distil, distil_to_rust};
+use rl::distill::{feature_importance, normalise_importance, distil, net_to_rust};
 
 use std::env;
 use std::fs;
@@ -788,9 +788,8 @@ async fn process_rl_job(
 
     let approx_rules = distil(&result.net, &states, &feature_names, 3);
 
-    let rust_snippet = distil_to_rust(
-        &result.net, &states, &feature_names, &indicator_specs,
-        lookback, &means, &stds, 3,
+    let rust_snippet = net_to_rust(
+        &result.net, &indicator_specs, lookback, &means, &stds, allow_short,
     );
 
     let rl_summary = serde_json::json!({
