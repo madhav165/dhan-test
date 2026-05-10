@@ -299,6 +299,7 @@ pub struct TrainConfig {
     pub entropy_coef: f64,
     pub gae_lambda: f64,
     pub batch_episodes: usize,
+    pub hidden_size: usize,
 }
 
 impl Default for TrainConfig {
@@ -325,6 +326,7 @@ impl Default for TrainConfig {
             entropy_coef: 0.01,
             gae_lambda: 0.95,
             batch_episodes: 8,
+            hidden_size: 64,
         }
     }
 }
@@ -843,7 +845,7 @@ pub fn train_reinforce(
     let test_indices = &candle_indices[val_end..];
 
     let input_size = states.ncols() + 3;
-    let hidden_size = 32;
+    let hidden_size = config.hidden_size;
     let mut net = MLP::new(input_size, hidden_size);
     let mut m = AdamState::zero(&net);
     let mut v = AdamState::zero(&net);
@@ -939,7 +941,7 @@ pub fn train_ppo(
     let test_indices = &candle_indices[val_end..];
 
     let input_size = states.ncols() + 3;
-    let hidden_size = 32;
+    let hidden_size = config.hidden_size;
     let mut net = MLP::new(input_size, hidden_size);
     let mut m = AdamState::zero(&net);
     let mut v = AdamState::zero(&net);

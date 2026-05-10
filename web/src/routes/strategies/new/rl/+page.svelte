@@ -28,6 +28,7 @@
 	let constraints: RLConstraint[] = $state([])
 	let training_method = $state<'ppo' | 'reinforce'>('ppo')
 	let lr = $state(0.0001)
+	let hidden_size = $state(64)
 	let ppo_epochs = $state(4)
 	let clip_epsilon = $state(0.2)
 	let value_coef = $state(0.5)
@@ -95,6 +96,7 @@
 		train_to,
 		training_method,
 		lr,
+		hidden_size,
 		ppo_epochs,
 		clip_epsilon,
 		value_coef,
@@ -209,6 +211,15 @@
 				<div class="param">
 					<span class="param-label">LR</span>
 					<input type="number" min="0.000001" max="0.01" step="0.000001" bind:value={lr} class="num-input" />
+				</div>
+				<div class="param">
+					<span class="param-label">Hidden</span>
+					<select bind:value={hidden_size} class="method-select">
+						<option value={32}>32</option>
+						<option value={64}>64</option>
+						<option value={128}>128</option>
+						<option value={256}>256</option>
+					</select>
 				</div>
 				<div class="param">
 					<span class="param-label">Epochs</span>

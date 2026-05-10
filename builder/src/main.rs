@@ -745,6 +745,7 @@ async fn process_rl_job(
     let entropy_coef = rl_config["entropy_coef"].as_f64().unwrap_or(0.01);
     let gae_lambda = rl_config["gae_lambda"].as_f64().unwrap_or(0.95);
     let batch_episodes = rl_config["batch_episodes"].as_u64().unwrap_or(8) as usize;
+    let hidden_size = rl_config["hidden_size"].as_u64().unwrap_or(64) as usize;
 
     let indicator_specs: Vec<IndicatorSpec> = serde_json::from_value(
         rl_config["indicators"].clone()
@@ -874,6 +875,7 @@ async fn process_rl_job(
         entropy_coef,
         gae_lambda,
         batch_episodes,
+        hidden_size,
     };
 
     let result = if training_method == "reinforce" {
