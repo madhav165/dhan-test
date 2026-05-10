@@ -738,6 +738,7 @@ async fn process_rl_job(
     let allow_short = rl_config["allow_short"].as_bool().unwrap_or(false);
     let reward_type = rl_config["reward"].as_str().unwrap_or("pnl").to_string();
     let training_method = rl_config["training_method"].as_str().unwrap_or("ppo").to_string();
+    let lr = rl_config["lr"].as_f64().unwrap_or(1e-4);
     let ppo_epochs = rl_config["ppo_epochs"].as_u64().unwrap_or(4) as usize;
     let clip_epsilon = rl_config["clip_epsilon"].as_f64().unwrap_or(0.2);
     let value_coef = rl_config["value_coef"].as_f64().unwrap_or(0.5);
@@ -858,7 +859,7 @@ async fn process_rl_job(
         early_stopping_patience: 100,
         min_delta: 1e-6,
         grad_clip_norm: 1.0,
-        lr: 3e-4,
+        lr,
         gamma: 0.99,
         allow_short,
         reward_type,

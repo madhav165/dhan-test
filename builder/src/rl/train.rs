@@ -310,7 +310,7 @@ impl Default for TrainConfig {
             early_stopping_patience: 50,
             min_delta: 1e-6,
             grad_clip_norm: 1.0,
-            lr: 3e-4,
+            lr: 1e-4,
             gamma: 0.99,
             allow_short: false,
             reward_type: "pnl".into(),

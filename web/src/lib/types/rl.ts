@@ -20,6 +20,7 @@ export type RLConfig = {
 	test_from?: string
 	test_to?: string
 	training_method: 'ppo' | 'reinforce'
+	lr: number
 	ppo_epochs: number
 	clip_epsilon: number
 	value_coef: number

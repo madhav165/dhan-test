@@ -27,6 +27,7 @@
 	let selectedIndicators: string[] = $state(['rsi', 'sma'])
 	let constraints: RLConstraint[] = $state([])
 	let training_method = $state<'ppo' | 'reinforce'>('ppo')
+	let lr = $state(0.0001)
 	let ppo_epochs = $state(4)
 	let clip_epsilon = $state(0.2)
 	let value_coef = $state(0.5)
@@ -93,6 +94,7 @@
 		train_from,
 		train_to,
 		training_method,
+		lr,
 		ppo_epochs,
 		clip_epsilon,
 		value_coef,
@@ -204,6 +206,10 @@
 		<div class="field ppo-params">
 			<label>PPO hyperparameters</label>
 			<div class="param-grid">
+				<div class="param">
+					<span class="param-label">LR</span>
+					<input type="number" min="0.00001" max="0.01" step="0.00001" bind:value={lr} class="num-input" />
+				</div>
 				<div class="param">
 					<span class="param-label">Epochs</span>
 					<input type="number" min="1" max="20" bind:value={ppo_epochs} class="num-input" />
