@@ -208,7 +208,7 @@
 			<div class="param-grid">
 				<div class="param">
 					<span class="param-label">LR</span>
-					<input type="number" min="0.00001" max="0.01" step="0.00001" bind:value={lr} class="num-input" />
+					<input type="number" min="0.000001" max="0.01" step="0.000001" bind:value={lr} class="num-input" />
 				</div>
 				<div class="param">
 					<span class="param-label">Epochs</span>
