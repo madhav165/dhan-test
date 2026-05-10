@@ -681,12 +681,35 @@ fn rollout_ppo(
     if position != 0 && n > 0 {
         let last_idx = start + n - 1;
         let last_price = closes[candle_indices[last_idx]];
+        let close_r = close_position_reward(position, entry_price, last_price, charges);
         if let Some(last_step) = steps.last_mut() {
-            last_step.reward += close_position_reward(position, entry_price, last_price, charges);
+            last_step.reward += close_r;
+        }
+        if let Some(last_r) = rewards.last_mut() {
+            *last_r += close_r;
         }
     }
 
-    let episode_return = rewards.iter().sum::<f64>();
+    let episode_return = match config.reward_type.as_str() {
+        "sharpe" => {
+            let mean = rewards.iter().sum::<f64>() / rewards.len() as f64;
+            let var = rewards.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / rewards.len() as f64;
+            let std = var.sqrt();
+            if std < 1e-12 { 0.0 } else { mean / std }
+        }
+        "min_drawdown" => {
+            let mut equity = 0.0f64;
+            let mut peak = 0.0f64;
+            let mut max_dd = 0.0f64;
+            for r in &rewards {
+                equity += r;
+                if equity > peak { peak = equity; }
+                max_dd = max_dd.max(peak - equity);
+            }
+            -max_dd
+        }
+        _ => rewards.iter().sum::<f64>(),
+    };
     (steps, episode_return)
 }
 
