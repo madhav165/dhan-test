@@ -372,7 +372,12 @@ fn position_features(position: i8, holding: usize, entry_price: f64, price: f64)
         -1 => entry_price - price,
         _ => 0.0,
     };
-    [position as f64, holding as f64, unrealized]
+    // Scale to roughly unit variance so they don't swamp normalized base features
+    [
+        position as f64 * 0.5,
+        (holding as f64 / 20.0).clamp(-5.0, 5.0),
+        (unrealized / entry_price.max(1e-8)).clamp(-5.0, 5.0),
+    ]
 }
 
 fn decision_state(base_state: &[f64], position: i8, holding: usize, entry_price: f64, price: f64) -> Vec<f64> {
@@ -388,6 +393,107 @@ fn close_position_reward(position: i8, entry_price: f64, price: f64, charges: &B
         -1 => (entry_price - price) - charges.cost(price, entry_price),
         _ => 0.0,
     }
+}
+
+/// Walk the data greedily and compute the training objective metric (PnL, Sharpe, etc.).
+/// Used for validation during training so early stopping aligns with the reward_type.
+fn greedy_objective(
+    net: &MLP,
+    states: &Array2<f64>,
+    closes: &[f64],
+    candle_indices: &[usize],
+    config: &TrainConfig,
+    charges: &BrokerCharges,
+) -> f64 {
+    let n = states.nrows();
+    let mut position: i8 = 0;
+    let mut entry_price = 0.0f64;
+    let mut holding = 0usize;
+    let mut trades = 0usize;
+    let mut rewards = vec![];
+
+    for t in 0..n {
+        let base_state = states.row(t).to_vec();
+        let price = closes[candle_indices[t]];
+        let state = decision_state(&base_state, position, holding, entry_price, price);
+        let action = net.greedy_action(&state, config.allow_short);
+
+        let r = step_reward(action, &mut position, &mut entry_price, &mut holding, &mut trades, price, config, charges);
+        rewards.push(r);
+    }
+
+    match config.reward_type.as_str() {
+        "sharpe" => {
+            let mean = rewards.iter().sum::<f64>() / rewards.len() as f64;
+            let var = rewards.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / rewards.len() as f64;
+            let std = var.sqrt();
+            if std < 1e-12 { 0.0 } else { mean / std }
+        }
+        "min_drawdown" => {
+            let mut equity = 0.0f64;
+            let mut peak = 0.0f64;
+            let mut max_dd = 0.0f64;
+            for r in &rewards {
+                equity += r;
+                if equity > peak { peak = equity; }
+                max_dd = max_dd.max(peak - equity);
+            }
+            -max_dd
+        }
+        _ => rewards.iter().sum::<f64>(),
+    }
+}
+
+/// Walk the data greedily and collect the actual decision states (including position features).
+/// Used for feature importance and distillation so they reflect real agent behaviour.
+pub fn collect_greedy_states(
+    net: &MLP,
+    states: &Array2<f64>,
+    closes: &[f64],
+    candle_indices: &[usize],
+    allow_short: bool,
+) -> Array2<f64> {
+    let n = states.nrows();
+    let base_dim = states.ncols();
+    let state_dim = base_dim + 3;
+    let mut out = Array2::zeros((n, state_dim));
+    let mut position: i8 = 0;
+    let mut entry_price = 0.0f64;
+    let mut holding = 0usize;
+
+    for t in 0..n {
+        let base = states.row(t).to_vec();
+        let price = closes[candle_indices[t]];
+        let pf = position_features(position, holding, entry_price, price);
+
+        for (j, &v) in base.iter().enumerate() {
+            out[[t, j]] = v;
+        }
+        for (j, &v) in pf.iter().enumerate() {
+            out[[t, base_dim + j]] = v;
+        }
+
+        let action = net.greedy_action(
+            &decision_state(&base, position, holding, entry_price, price),
+            allow_short,
+        );
+
+        match (position, action) {
+            (0, 1) => { position = 1; entry_price = price; holding = 0; }
+            (0, 2) if allow_short => { position = -1; entry_price = price; holding = 0; }
+            (1, 0) | (1, 2) => {
+                position = 0; holding = 0;
+                if action == 2 && allow_short { position = -1; entry_price = price; }
+            }
+            (-1, 0) | (-1, 1) => {
+                position = 0; holding = 0;
+                if action == 1 { position = 1; entry_price = price; }
+            }
+            _ => {}
+        }
+        if position != 0 { holding += 1; }
+    }
+    out
 }
 
 fn rollout(
@@ -514,7 +620,7 @@ pub fn train(
     let mut final_train_reward = 0.0f64;
     let mut reward_ema: Option<f64> = None;
     let mut best_net = net.clone();
-    let mut best_val_pnl = f64::NEG_INFINITY;
+    let mut best_val_metric = f64::NEG_INFINITY;
     let mut best_episode = 0usize;
     let mut episodes_since_best = 0usize;
     let mut episodes_run = 0usize;
@@ -545,16 +651,16 @@ pub fn train(
         eprintln!("rl train: episode {}/{} return={:.4}", ep, config.max_episodes, final_train_reward);
 
         if val_states.nrows() > 0 && ((ep + 1) % validation_interval == 0 || ep + 1 == config.max_episodes) {
-            let val_pnl = evaluate(&net, &val_states, closes, val_indices, config.allow_short, charges);
-            if val_pnl > best_val_pnl + config.min_delta {
-                best_val_pnl = val_pnl;
+            let val_metric = greedy_objective(&net, &val_states, closes, val_indices, config, charges);
+            if val_metric > best_val_metric + config.min_delta {
+                best_val_metric = val_metric;
                 best_net = net.clone();
                 best_episode = ep + 1;
                 episodes_since_best = 0;
             } else {
                 episodes_since_best += validation_interval;
                 if episodes_since_best >= config.early_stopping_patience {
-                    eprintln!("rl train: early stopping at episode {} best_episode={} best_val_pnl={:.4}", ep + 1, best_episode, best_val_pnl);
+                    eprintln!("rl train: early stopping at episode {} best_episode={} best_val_metric={:.4}", ep + 1, best_episode, best_val_metric);
                     break;
                 }
             }

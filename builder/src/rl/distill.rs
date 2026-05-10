@@ -185,9 +185,9 @@ pub fn net_to_rust(
     lines.push("        for k in 0..5_usize { feat[off+k] = (raw[k] - means[off+k]) / stds[off+k]; }".into());
     lines.push("        off += 5;".into());
     lines.push("    }".into());
-    lines.push("    feat[off] = position as f64;".into());
-    lines.push("    feat[off + 1] = holding as f64;".into());
-    lines.push("    feat[off + 2] = unrealized_pnl;".into());
+    lines.push("    feat[off] = norm_position;".into());
+    lines.push("    feat[off + 1] = norm_holding;".into());
+    lines.push("    feat[off + 2] = norm_unrealized;".into());
 
     // Forward pass: input -> tanh -> tanh -> softmax
     lines.push("    let mm = |w: &[f64], x: &[f64], r: usize, c: usize| -> Vec<f64> { (0..r).map(|i| (0..c).map(|j| w[i*c+j]*x[j]).sum::<f64>()).collect() };".into());

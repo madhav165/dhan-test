@@ -1,6 +1,6 @@
 mod rl;
 use rl::features::{Candles, IndicatorSpec, compute_indicators, build_state_matrix_with_indices, normalise_with_stats, apply_normalisation_stats};
-use rl::train::{TrainConfig, train as rl_train, weights_to_bytes, split_points};
+use rl::train::{TrainConfig, train as rl_train, weights_to_bytes, split_points, collect_greedy_states};
 use rl::distill::{feature_importance, normalise_importance, distil, net_to_rust};
 
 use std::env;
@@ -109,7 +109,10 @@ pub extern "C" fn run(len: u32) -> *mut u8 {
             -1 => entry_price - price,
             _ => 0.0,
         };
-        let sig = signal(prices, opens, volumes, highs, lows, i, position, holding, unrealized_pnl) as u8;
+        let norm_position = position as f64 * 0.5;
+        let norm_holding = (holding as f64 / 20.0).clamp(-5.0, 5.0);
+        let norm_unrealized = (unrealized_pnl / entry_price.max(1e-8)).clamp(-5.0, 5.0);
+        let sig = signal(prices, opens, volumes, highs, lows, i, norm_position, norm_holding, norm_unrealized) as u8;
         s.signals[i] = sig;
         match (position, sig) {
             (0, 1) => { position = 1; entry_price = price; holding = 0; }
@@ -129,7 +132,7 @@ pub extern "C" fn run(len: u32) -> *mut u8 {
     s.signals.as_mut_ptr()
 }
 
-fn signal(prices: &[f64], opens: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64], i: usize, position: i8, holding: usize, unrealized_pnl: f64) -> u8 {
+fn signal(prices: &[f64], opens: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64], i: usize, norm_position: f64, norm_holding: f64, norm_unrealized: f64) -> u8 {
     // USER CODE
 }
 "#;
@@ -840,12 +843,13 @@ async fn process_rl_job(
     let weights_key = format!("strategies/{}/weights.bin", strategy_id);
     upload(s3, bucket, &weights_key, weights).await?;
 
-    let train_states_for_explain = {
-        let base = states.slice(ndarray::s![..train_end, ..]).to_owned();
-        let mut out = ndarray::Array2::zeros((base.nrows(), base.ncols() + 3));
-        out.slice_mut(ndarray::s![.., ..base.ncols()]).assign(&base);
-        out
-    };
+    let train_states_for_explain = collect_greedy_states(
+        &result.net,
+        &states.slice(ndarray::s![..train_end, ..]).to_owned(),
+        &train_candles.closes,
+        &candle_indices[..train_end],
+        allow_short,
+    );
     let raw_imp = feature_importance(&result.net, &train_states_for_explain);
     let norm_imp = normalise_importance(&raw_imp);
     let feature_importance_json: Vec<serde_json::Value> = feature_names.iter()
