@@ -956,35 +956,35 @@ async fn process_rl_job(
             if test_states.nrows() == 0 {
                 None
             } else {
-                Some(rl::train::evaluate(&result.net, &test_states, &test_candles.closes, &test_indices, allow_short, &charges, position_deadband))
+                Some(rl::train::evaluate(&result.actor, &test_states, &test_candles.closes, &test_indices, allow_short, &charges, position_deadband))
             }
         }
     } else {
         None
     };
 
-    let weights = weights_to_bytes(&result.net)?;
+    let weights = weights_to_bytes(&result.actor)?;
     let weights_key = format!("strategies/{}/weights.bin", strategy_id);
     upload(s3, bucket, &weights_key, weights).await?;
 
     let train_states_for_explain = collect_greedy_states(
-        &result.net,
+        &result.actor,
         &states.slice(ndarray::s![..train_end, ..]).to_owned(),
         &train_candles.closes,
         &candle_indices[..train_end],
         allow_short,
     );
-    let raw_imp = feature_importance(&result.net, &train_states_for_explain);
+    let raw_imp = feature_importance(&result.actor, &train_states_for_explain);
     let norm_imp = normalise_importance(&raw_imp);
     let feature_importance_json: Vec<serde_json::Value> = feature_names.iter()
         .zip(norm_imp.iter())
         .map(|(name, &imp)| serde_json::json!({ "name": name, "importance": imp }))
         .collect();
 
-    let approx_rules = distil(&result.net, &train_states_for_explain, &feature_names, 3);
+    let approx_rules = distil(&result.actor, &train_states_for_explain, &feature_names, 3);
 
     let rust_snippet = net_to_rust(
-        &result.net, &indicator_specs, lookback, &means, &stds, allow_short,
+        &result.actor, &indicator_specs, lookback, &means, &stds, allow_short,
     );
     let split_date = |state_row: usize| -> String {
         candle_indices.get(state_row)

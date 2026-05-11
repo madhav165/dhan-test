@@ -10,24 +10,23 @@ pub enum Activation {
     Relu,
 }
 
+/// Pure feedforward network with a single output head.
 #[derive(Clone)]
 pub struct MLP {
     pub layer_weights: Vec<Array2<f64>>,
     pub layer_biases: Vec<Array1<f64>>,
     pub w_out: Array2<f64>,
     pub b_out: Array1<f64>,
-    pub w_value: Array1<f64>,
-    pub b_value: f64,
     pub input_size: usize,
     pub hidden_size: usize,
     pub num_layers: usize,
     pub activation: Activation,
-    pub continuous_action: bool,
-    pub action_std: f64,
+    #[allow(dead_code)]
+    pub out_size: usize,
 }
 
 impl MLP {
-    pub fn new(input_size: usize, hidden_size: usize, num_layers: usize, activation: Activation, continuous_action: bool, action_std: f64) -> Self {
+    pub fn new(input_size: usize, hidden_size: usize, num_layers: usize, activation: Activation, out_size: usize) -> Self {
         use rand_distr::{Normal, Distribution};
         let mut rng = rand::rng();
         let init_scale = match activation {
@@ -47,41 +46,35 @@ impl MLP {
             layer_biases.push(b);
         }
         
-        let out_size = if continuous_action { 1 } else { 3 };
         Self {
             layer_weights,
             layer_biases,
             w_out: Array2::from_shape_vec((out_size, hidden_size), init(out_size * hidden_size)).unwrap(),
             b_out: Array1::zeros(out_size),
-            w_value: Array1::zeros(hidden_size),
-            b_value: 0.0,
             input_size,
             hidden_size,
             num_layers,
             activation,
-            continuous_action,
-            action_std,
+            out_size,
         }
     }
 
-    fn activate(&self, v: f64) -> f64 {
+    pub fn activate(&self, v: f64) -> f64 {
         match self.activation {
             Activation::Tanh => v.tanh(),
             Activation::Relu => v.max(0.0),
         }
     }
 
-    fn act_derivative(&self, v: f64) -> f64 {
+    pub fn act_derivative(&self, v: f64) -> f64 {
         match self.activation {
             Activation::Tanh => 1.0 - v * v,
             Activation::Relu => if v > 0.0 { 1.0 } else { 0.0 },
         }
     }
 
-    /// Forward pass. Returns (pre_activations, activations, output) for all layers.
-    /// For discrete: output is [p0, p1, p2] softmax probs.
-    /// For continuous: output is [mean, 0.0, 0.0] where mean is tanh-constrained.
-    pub fn forward_full(&self, x: &[f64]) -> (Vec<Array1<f64>>, Vec<Array1<f64>>, [f64; 3]) {
+    /// Forward pass. Returns (pre_activations, activations, logits).
+    pub fn forward(&self, x: &[f64]) -> (Vec<Array1<f64>>, Vec<Array1<f64>>, Array1<f64>) {
         let mut pre_acts = Vec::with_capacity(self.num_layers);
         let mut acts = Vec::with_capacity(self.num_layers);
         let mut current = Array1::from_vec(x.to_vec());
@@ -99,26 +92,106 @@ impl MLP {
             }
         }
         
-        if self.continuous_action {
-            let logit = self.w_out.dot(&current)[0] + self.b_out[0];
-            let mean = logit.tanh();
-            return (pre_acts, acts, [mean, 0.0, 0.0]);
-        }
-        
         let logits = self.w_out.dot(&current) + &self.b_out;
-        let max = logits.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let exp = logits.mapv(|v| (v - max).exp());
-        let sum: f64 = exp.sum();
-        let probs = [exp[0] / sum, exp[1] / sum, exp[2] / sum];
-        
-        (pre_acts, acts, probs)
+        (pre_acts, acts, logits)
     }
 
-    pub fn forward_full_with_value(&self, x: &[f64]) -> (Vec<Array1<f64>>, Vec<Array1<f64>>, [f64; 3], f64) {
-        let (pre_acts, acts, probs) = self.forward_full(x);
-        let h_last = acts.last().unwrap();
-        let value = h_last.dot(&self.w_value) + self.b_value;
-        (pre_acts, acts, probs, value)
+    pub fn apply_adam(&mut self, grads: &Grads, m: &mut AdamState, v: &mut AdamState, t: usize, lr: f64) {
+        let (beta1, beta2, eps) = (0.9f64, 0.999f64, 1e-8f64);
+        let bc1 = 1.0 - beta1.powi(t as i32);
+        let bc2 = 1.0 - beta2.powi(t as i32);
+
+        fn update(param: &mut [f64], grad: &[f64], m: &mut [f64], v: &mut [f64], beta1: f64, beta2: f64, lr: f64, bc1: f64, bc2: f64, eps: f64) {
+            for i in 0..param.len() {
+                m[i] = beta1 * m[i] + (1.0 - beta1) * grad[i];
+                v[i] = beta2 * v[i] + (1.0 - beta2) * grad[i].powi(2);
+                param[i] -= lr * (m[i] / bc1) / ((v[i] / bc2).sqrt() + eps);
+            }
+        }
+
+        for i in 0..self.layer_weights.len() {
+            update(
+                self.layer_weights[i].as_slice_mut().unwrap(),
+                grads.layer_weights[i].as_slice().unwrap(),
+                m.layer_weights[i].as_slice_mut().unwrap(),
+                v.layer_weights[i].as_slice_mut().unwrap(),
+                beta1, beta2, lr, bc1, bc2, eps
+            );
+            update(
+                self.layer_biases[i].as_slice_mut().unwrap(),
+                grads.layer_biases[i].as_slice().unwrap(),
+                m.layer_biases[i].as_slice_mut().unwrap(),
+                v.layer_biases[i].as_slice_mut().unwrap(),
+                beta1, beta2, lr, bc1, bc2, eps
+            );
+        }
+        update(self.w_out.as_slice_mut().unwrap(), grads.w_out.as_slice().unwrap(), m.w_out.as_slice_mut().unwrap(), v.w_out.as_slice_mut().unwrap(), beta1, beta2, lr, bc1, bc2, eps);
+        update(self.b_out.as_slice_mut().unwrap(), grads.b_out.as_slice().unwrap(), m.b_out.as_slice_mut().unwrap(), v.b_out.as_slice_mut().unwrap(), beta1, beta2, lr, bc1, bc2, eps);
+    }
+
+    pub fn params(&self) -> Vec<f64> {
+        let mut p = vec![];
+        for (w, b) in self.layer_weights.iter().zip(&self.layer_biases) {
+            p.extend(w.iter());
+            p.extend(b.iter());
+        }
+        p.extend(self.w_out.iter());
+        p.extend(self.b_out.iter());
+        p
+    }
+
+    pub fn add_regularization(&self, grads: &mut Grads, reg_type: &str, lambda: f64) {
+        if lambda <= 0.0 || reg_type == "none" {
+            return;
+        }
+        match reg_type {
+            "l1" => {
+                for (layer_idx, w) in self.layer_weights.iter().enumerate() {
+                    grads.layer_weights[layer_idx] += &w.mapv(|v| lambda * v.signum());
+                }
+                grads.w_out += &self.w_out.mapv(|v| lambda * v.signum());
+            }
+            "l2" => {
+                for (layer_idx, w) in self.layer_weights.iter().enumerate() {
+                    grads.layer_weights[layer_idx] += &(w * lambda);
+                }
+                grads.w_out += &(self.w_out.clone() * lambda);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Policy network.
+#[derive(Clone)]
+pub struct Actor {
+    pub net: MLP,
+    pub continuous_action: bool,
+    pub action_std: f64,
+}
+
+impl Actor {
+    pub fn new(input_size: usize, hidden_size: usize, num_layers: usize, activation: Activation, continuous_action: bool, action_std: f64) -> Self {
+        let out_size = if continuous_action { 1 } else { 3 };
+        Self {
+            net: MLP::new(input_size, hidden_size, num_layers, activation, out_size),
+            continuous_action,
+            action_std,
+        }
+    }
+
+    pub fn forward_full(&self, x: &[f64]) -> (Vec<Array1<f64>>, Vec<Array1<f64>>, [f64; 3]) {
+        let (pre_acts, acts, logits) = self.net.forward(x);
+        if self.continuous_action {
+            let mean = logits[0].tanh();
+            (pre_acts, acts, [mean, 0.0, 0.0])
+        } else {
+            let max = logits.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let exp = logits.mapv(|v| (v - max).exp());
+            let sum: f64 = exp.sum();
+            let probs = [exp[0] / sum, exp[1] / sum, exp[2] / sum];
+            (pre_acts, acts, probs)
+        }
     }
 
     pub fn probs(&self, x: &[f64], mask_sell: bool) -> [f64; 3] {
@@ -169,12 +242,12 @@ impl MLP {
             grads.w_out += &(h_last.clone().insert_axis(Axis(0)) * d_mean);
             grads.b_out[0] += d_mean;
 
-            let mut d_h = &self.w_out.row(0) * d_mean;
+            let mut d_h = &self.net.w_out.row(0) * d_mean;
 
-            for layer_idx in (0..self.num_layers).rev() {
+            for layer_idx in (0..self.net.num_layers).rev() {
                 let pre = &pre_acts[layer_idx];
                 let prev_h = if layer_idx == 0 { Array1::from(x.to_vec()) } else { acts[layer_idx - 1].clone() };
-                let d_pre = pre.mapv(|p| self.act_derivative(p)) * &d_h;
+                let d_pre = pre.mapv(|p| self.net.act_derivative(p)) * &d_h;
 
                 for (a, b) in grads.layer_biases[layer_idx].iter_mut().zip(d_pre.iter()) {
                     *a += b;
@@ -185,7 +258,7 @@ impl MLP {
                 }
 
                 if layer_idx > 0 {
-                    d_h = self.layer_weights[layer_idx].t().dot(&d_pre);
+                    d_h = self.net.layer_weights[layer_idx].t().dot(&d_pre);
                 }
             }
             return;
@@ -200,41 +273,39 @@ impl MLP {
         grads.b_out += &d_logits;
         grads.w_out += &(h_last.clone().insert_axis(Axis(0)) * d_logits.clone().insert_axis(Axis(1)));
 
-        let mut d_h = self.w_out.t().dot(&d_logits);
+        let mut d_h = self.net.w_out.t().dot(&d_logits);
 
-        for layer_idx in (0..self.num_layers).rev() {
+        for layer_idx in (0..self.net.num_layers).rev() {
             let pre = &pre_acts[layer_idx];
             let prev_h = if layer_idx == 0 { Array1::from(x.to_vec()) } else { acts[layer_idx - 1].clone() };
-            let d_pre = pre.mapv(|p| self.act_derivative(p)) * &d_h;
+            let d_pre = pre.mapv(|p| self.net.act_derivative(p)) * &d_h;
 
-                for (a, b) in grads.layer_biases[layer_idx].iter_mut().zip(d_pre.iter()) {
-                    *a += b;
-                }
-                let dw = d_pre.clone().insert_axis(Axis(1)) * prev_h.insert_axis(Axis(0));
-                for (a, b) in grads.layer_weights[layer_idx].iter_mut().zip(dw.iter()) {
-                    *a += b;
-                }
+            for (a, b) in grads.layer_biases[layer_idx].iter_mut().zip(d_pre.iter()) {
+                *a += b;
+            }
+            let dw = d_pre.clone().insert_axis(Axis(1)) * prev_h.insert_axis(Axis(0));
+            for (a, b) in grads.layer_weights[layer_idx].iter_mut().zip(dw.iter()) {
+                *a += b;
+            }
 
             if layer_idx > 0 {
-                d_h = self.layer_weights[layer_idx].t().dot(&d_pre);
+                d_h = self.net.layer_weights[layer_idx].t().dot(&d_pre);
             }
         }
     }
 
-    /// Accumulate PPO gradient for a single transition.
+    /// Accumulate PPO policy gradient for a single transition.
     pub fn accumulate_grad_ppo(
         &self,
         x: &[f64],
         action: Action,
         old_log_prob: f64,
         advantage: f64,
-        ret: f64,
         clip_epsilon: f64,
-        value_coef: f64,
         entropy_coef: f64,
         grads: &mut Grads,
     ) {
-        let (pre_acts, acts, probs, value) = self.forward_full_with_value(x);
+        let (pre_acts, acts, probs) = self.forward_full(x);
         let h_last = acts.last().unwrap();
 
         if self.continuous_action {
@@ -253,21 +324,15 @@ impl MLP {
             }
             d_mean *= 1.0 - mean * mean;
 
-            let d_value = value_coef * (value - ret);
-
             grads.w_out += &(h_last.clone().insert_axis(Axis(0)) * d_mean);
             grads.b_out[0] += d_mean;
 
-            grads.w_value += &(h_last * d_value);
-            grads.b_value += d_value;
+            let mut d_h = &self.net.w_out.row(0) * d_mean;
 
-            let mut d_h = &self.w_out.row(0) * d_mean;
-            d_h += &(self.w_value.clone() * d_value);
-
-            for layer_idx in (0..self.num_layers).rev() {
+            for layer_idx in (0..self.net.num_layers).rev() {
                 let pre = &pre_acts[layer_idx];
                 let prev_h = if layer_idx == 0 { Array1::from(x.to_vec()) } else { acts[layer_idx - 1].clone() };
-                let d_pre = pre.mapv(|p| self.act_derivative(p)) * &d_h;
+                let d_pre = pre.mapv(|p| self.net.act_derivative(p)) * &d_h;
 
                 for (a, b) in grads.layer_biases[layer_idx].iter_mut().zip(d_pre.iter()) {
                     *a += b;
@@ -278,7 +343,7 @@ impl MLP {
                 }
 
                 if layer_idx > 0 {
-                    d_h = self.layer_weights[layer_idx].t().dot(&d_pre);
+                    d_h = self.net.layer_weights[layer_idx].t().dot(&d_pre);
                 }
             }
             return;
@@ -304,108 +369,76 @@ impl MLP {
             }
         }
 
-        let d_value = value_coef * (value - ret);
-
         grads.b_out += &d_logits;
         grads.w_out += &(h_last.clone().insert_axis(Axis(0)) * d_logits.clone().insert_axis(Axis(1)));
 
-        grads.w_value += &(h_last * d_value);
-        grads.b_value += d_value;
+        let mut d_h = self.net.w_out.t().dot(&d_logits);
 
-        let mut d_h = self.w_out.t().dot(&d_logits);
-        d_h += &(self.w_value.clone() * d_value);
-
-        for layer_idx in (0..self.num_layers).rev() {
+        for layer_idx in (0..self.net.num_layers).rev() {
             let pre = &pre_acts[layer_idx];
             let prev_h = if layer_idx == 0 { Array1::from(x.to_vec()) } else { acts[layer_idx - 1].clone() };
-            let d_pre = pre.mapv(|p| self.act_derivative(p)) * &d_h;
+            let d_pre = pre.mapv(|p| self.net.act_derivative(p)) * &d_h;
 
-                for (a, b) in grads.layer_biases[layer_idx].iter_mut().zip(d_pre.iter()) {
-                    *a += b;
-                }
-                let dw = d_pre.clone().insert_axis(Axis(1)) * prev_h.insert_axis(Axis(0));
-                for (a, b) in grads.layer_weights[layer_idx].iter_mut().zip(dw.iter()) {
-                    *a += b;
-                }
+            for (a, b) in grads.layer_biases[layer_idx].iter_mut().zip(d_pre.iter()) {
+                *a += b;
+            }
+            let dw = d_pre.clone().insert_axis(Axis(1)) * prev_h.insert_axis(Axis(0));
+            for (a, b) in grads.layer_weights[layer_idx].iter_mut().zip(dw.iter()) {
+                *a += b;
+            }
 
             if layer_idx > 0 {
-                d_h = self.layer_weights[layer_idx].t().dot(&d_pre);
+                d_h = self.net.layer_weights[layer_idx].t().dot(&d_pre);
             }
         }
     }
+}
 
-    pub fn apply_adam(&mut self, grads: &Grads, m: &mut AdamState, v: &mut AdamState, t: usize, lr: f64) {
-        let (beta1, beta2, eps) = (0.9f64, 0.999f64, 1e-8f64);
-        let bc1 = 1.0 - beta1.powi(t as i32);
-        let bc2 = 1.0 - beta2.powi(t as i32);
+/// Value network.
+#[derive(Clone)]
+pub struct Critic {
+    pub net: MLP,
+}
 
-        fn update(param: &mut [f64], grad: &[f64], m: &mut [f64], v: &mut [f64], beta1: f64, beta2: f64, lr: f64, bc1: f64, bc2: f64, eps: f64) {
-            for i in 0..param.len() {
-                m[i] = beta1 * m[i] + (1.0 - beta1) * grad[i];
-                v[i] = beta2 * v[i] + (1.0 - beta2) * grad[i].powi(2);
-                param[i] -= lr * (m[i] / bc1) / ((v[i] / bc2).sqrt() + eps);
-            }
+impl Critic {
+    pub fn new(input_size: usize, hidden_size: usize, num_layers: usize, activation: Activation) -> Self {
+        Self {
+            net: MLP::new(input_size, hidden_size, num_layers, activation, 1),
         }
-
-        for i in 0..self.layer_weights.len() {
-            update(
-                self.layer_weights[i].as_slice_mut().unwrap(),
-                grads.layer_weights[i].as_slice().unwrap(),
-                m.layer_weights[i].as_slice_mut().unwrap(),
-                v.layer_weights[i].as_slice_mut().unwrap(),
-                beta1, beta2, lr, bc1, bc2, eps
-            );
-            update(
-                self.layer_biases[i].as_slice_mut().unwrap(),
-                grads.layer_biases[i].as_slice().unwrap(),
-                m.layer_biases[i].as_slice_mut().unwrap(),
-                v.layer_biases[i].as_slice_mut().unwrap(),
-                beta1, beta2, lr, bc1, bc2, eps
-            );
-        }
-        update(self.w_out.as_slice_mut().unwrap(), grads.w_out.as_slice().unwrap(), m.w_out.as_slice_mut().unwrap(), v.w_out.as_slice_mut().unwrap(), beta1, beta2, lr, bc1, bc2, eps);
-        update(self.b_out.as_slice_mut().unwrap(), grads.b_out.as_slice().unwrap(), m.b_out.as_slice_mut().unwrap(), v.b_out.as_slice_mut().unwrap(), beta1, beta2, lr, bc1, bc2, eps);
-        update(self.w_value.as_slice_mut().unwrap(), grads.w_value.as_slice().unwrap(), m.w_value.as_slice_mut().unwrap(), v.w_value.as_slice_mut().unwrap(), beta1, beta2, lr, bc1, bc2, eps);
-
-        m.b_value = beta1 * m.b_value + (1.0 - beta1) * grads.b_value;
-        let v_bv = beta2 * v.b_value + (1.0 - beta2) * grads.b_value.powi(2);
-        v.b_value = v_bv;
-        self.b_value -= lr * (m.b_value / bc1) / ((v_bv / bc2).sqrt() + eps);
     }
 
-    pub fn params(&self) -> Vec<f64> {
-        let mut p = vec![];
-        for (w, b) in self.layer_weights.iter().zip(&self.layer_biases) {
-            p.extend(w.iter());
-            p.extend(b.iter());
-        }
-        p.extend(self.w_out.iter());
-        p.extend(self.b_out.iter());
-        p.extend(self.w_value.iter());
-        p.push(self.b_value);
-        p
+    pub fn forward_value(&self, x: &[f64]) -> f64 {
+        let (_, _, logits) = self.net.forward(x);
+        logits[0]
     }
 
-    pub fn add_regularization(&self, grads: &mut Grads, reg_type: &str, lambda: f64) {
-        if lambda <= 0.0 || reg_type == "none" {
-            return;
-        }
-        match reg_type {
-            "l1" => {
-                for (layer_idx, w) in self.layer_weights.iter().enumerate() {
-                    grads.layer_weights[layer_idx] += &w.mapv(|v| lambda * v.signum());
-                }
-                grads.w_out += &self.w_out.mapv(|v| lambda * v.signum());
-                grads.w_value += &self.w_value.mapv(|v| lambda * v.signum());
+    pub fn accumulate_grad(&self, x: &[f64], ret: f64, grads: &mut Grads) {
+        let (pre_acts, acts, logits) = self.net.forward(x);
+        let value = logits[0];
+        let d_value = value - ret; // gradient of 0.5 * (value - ret)^2
+
+        let h_last = acts.last().unwrap();
+        grads.w_out += &(h_last.clone().insert_axis(Axis(0)) * d_value);
+        grads.b_out[0] += d_value;
+
+        let mut d_h = self.net.w_out.row(0).to_owned() * d_value;
+
+        for layer_idx in (0..self.net.num_layers).rev() {
+            let pre = &pre_acts[layer_idx];
+            let prev_h = if layer_idx == 0 { Array1::from(x.to_vec()) } else { acts[layer_idx - 1].clone() };
+            let d_pre = pre.mapv(|p| self.net.act_derivative(p)) * &d_h;
+
+            for (a, b) in grads.layer_biases[layer_idx].iter_mut().zip(d_pre.iter()) {
+                *a += b;
             }
-            "l2" => {
-                for (layer_idx, w) in self.layer_weights.iter().enumerate() {
-                    grads.layer_weights[layer_idx] += &(w * lambda);
-                }
-                grads.w_out += &(self.w_out.clone() * lambda);
-                grads.w_value += &(self.w_value.clone() * lambda);
+            let dw = d_pre.clone().insert_axis(Axis(1)) * prev_h.insert_axis(Axis(0));
+            for (a, b) in grads.layer_weights[layer_idx].iter_mut().zip(dw.iter()) {
+                *a += b;
             }
-            _ => {}
+
+            if layer_idx > 0 {
+                d_h = self.net.layer_weights[layer_idx].t().dot(&d_pre);
+            }
         }
     }
 }
@@ -415,23 +448,19 @@ pub struct Grads {
     pub layer_biases: Vec<Array1<f64>>,
     pub w_out: Array2<f64>,
     pub b_out: Array1<f64>,
-    pub w_value: Array1<f64>,
-    pub b_value: f64,
 }
 
 impl Grads {
-    fn zero(net: &MLP) -> Self {
+    pub fn zero(net: &MLP) -> Self {
         Self {
             layer_weights: net.layer_weights.iter().map(|w| Array2::zeros(w.raw_dim())).collect(),
             layer_biases: net.layer_biases.iter().map(|b| Array1::zeros(b.raw_dim())).collect(),
             w_out: Array2::zeros(net.w_out.raw_dim()),
             b_out: Array1::zeros(net.b_out.raw_dim()),
-            w_value: Array1::zeros(net.w_value.raw_dim()),
-            b_value: 0.0,
         }
     }
 
-    fn clip_global_norm(&mut self, max_norm: f64) {
+    pub fn clip_global_norm(&mut self, max_norm: f64) {
         let mut sum_sq = 0.0f64;
         for w in &self.layer_weights {
             sum_sq += w.iter().map(|v| v * v).sum::<f64>();
@@ -441,8 +470,6 @@ impl Grads {
         }
         sum_sq += self.w_out.iter().map(|v| v * v).sum::<f64>();
         sum_sq += self.b_out.iter().map(|v| v * v).sum::<f64>();
-        sum_sq += self.w_value.iter().map(|v| v * v).sum::<f64>();
-        sum_sq += self.b_value * self.b_value;
         let norm = sum_sq.sqrt();
         if norm <= max_norm || norm < 1e-12 {
             return;
@@ -456,8 +483,6 @@ impl Grads {
         }
         self.w_out *= scale;
         self.b_out *= scale;
-        self.w_value *= scale;
-        self.b_value *= scale;
     }
 }
 
@@ -466,19 +491,15 @@ pub struct AdamState {
     pub layer_biases: Vec<Array1<f64>>,
     pub w_out: Array2<f64>,
     pub b_out: Array1<f64>,
-    pub w_value: Array1<f64>,
-    pub b_value: f64,
 }
 
 impl AdamState {
-    fn zero(net: &MLP) -> Self {
+    pub fn zero(net: &MLP) -> Self {
         Self {
             layer_weights: net.layer_weights.iter().map(|w| Array2::zeros(w.raw_dim())).collect(),
             layer_biases: net.layer_biases.iter().map(|b| Array1::zeros(b.raw_dim())).collect(),
             w_out: Array2::zeros(net.w_out.raw_dim()),
             b_out: Array1::zeros(net.b_out.raw_dim()),
-            w_value: Array1::zeros(net.w_value.raw_dim()),
-            b_value: 0.0,
         }
     }
 }
@@ -809,7 +830,7 @@ fn close_position_reward(position: f64, entry_price: f64, price: f64, charges: &
 }
 
 fn greedy_objective(
-    net: &MLP,
+    actor: &Actor,
     states: &Array2<f64>,
     closes: &[f64],
     candle_indices: &[usize],
@@ -828,7 +849,7 @@ fn greedy_objective(
         let base_state = states.row(t).to_vec();
         let price = closes[candle_indices[t]];
         let state = decision_state(&base_state, position, holding, entry_price, price);
-        let action = net.greedy_action(&state, config.allow_short);
+        let action = actor.greedy_action(&state, config.allow_short);
         let prev_price = if t > 0 { closes[candle_indices[t - 1]] } else { price };
 
         let r = step_reward(action, prev_action, &mut position, &mut entry_price, &mut holding, &mut trades, price, prev_price, config, charges);
@@ -859,7 +880,7 @@ fn greedy_objective(
 }
 
 pub fn collect_greedy_states(
-    net: &MLP,
+    actor: &Actor,
     states: &Array2<f64>,
     closes: &[f64],
     candle_indices: &[usize],
@@ -885,12 +906,12 @@ pub fn collect_greedy_states(
             out[[t, base_dim + j]] = v;
         }
 
-        let action = net.greedy_action(
+        let action = actor.greedy_action(
             &decision_state(&base, position, holding, entry_price, price),
             allow_short,
         );
 
-        if net.continuous_action {
+        if actor.continuous_action {
             if action != position {
                 entry_price = if action != 0.0 { price } else { 0.0 };
             }
@@ -917,7 +938,7 @@ pub fn collect_greedy_states(
 }
 
 fn rollout(
-    net: &MLP,
+    actor: &Actor,
     states: &Array2<f64>,
     closes: &[f64],
     candle_indices: &[usize],
@@ -944,7 +965,7 @@ fn rollout(
         let row_idx = start + t;
         let price = closes[candle_indices[row_idx]];
         let state = decision_state(&states.row(row_idx).to_vec(), position, holding, entry_price, price);
-        let (action, _) = net.sample_action(&state, rng, config.allow_short);
+        let (action, _) = actor.sample_action(&state, rng, config.allow_short);
         let prev_price = if t > 0 { closes[candle_indices[row_idx - 1]] } else { price };
         let r = step_reward(action, prev_action, &mut position, &mut entry_price, &mut holding, &mut trades, price, prev_price, config, charges);
         steps.push(Step { state, action, ret: 0.0 });
@@ -1034,7 +1055,8 @@ struct TrajectoryStep {
 }
 
 fn rollout_ppo(
-    net: &MLP,
+    actor: &Actor,
+    critic: &Critic,
     states: &Array2<f64>,
     closes: &[f64],
     candle_indices: &[usize],
@@ -1061,8 +1083,8 @@ fn rollout_ppo(
         let row_idx = start + t;
         let price = closes[candle_indices[row_idx]];
         let state = decision_state(&states.row(row_idx).to_vec(), position, holding, entry_price, price);
-        let (action, log_prob) = net.sample_action(&state, rng, config.allow_short);
-        let (_, _, _, value) = net.forward_full_with_value(&state);
+        let (action, log_prob) = actor.sample_action(&state, rng, config.allow_short);
+        let value = critic.forward_value(&state);
         let prev_price = if t > 0 { closes[candle_indices[row_idx - 1]] } else { price };
         let r = step_reward(action, prev_action, &mut position, &mut entry_price, &mut holding, &mut trades, price, prev_price, config, charges);
         steps.push(TrajectoryStep { state, action, log_prob, value, reward: r });
@@ -1090,7 +1112,7 @@ fn rollout_ppo(
     let final_row_idx = start + n - 1;
     let final_price = closes[candle_indices[final_row_idx]];
     let final_state = decision_state(&states.row(final_row_idx).to_vec(), position, holding, entry_price, final_price);
-    let (_, _, _, bootstrap_value) = net.forward_full_with_value(&final_state);
+    let bootstrap_value = critic.forward_value(&final_state);
 
     let episode_return = match config.reward_type.as_str() {
         "sharpe" => {
@@ -1123,7 +1145,7 @@ pub struct EpisodeMetric {
 }
 
 pub struct TrainResult {
-    pub net: MLP,
+    pub actor: Actor,
     pub final_train_reward: f64,
     pub train_pnl: f64,
     pub val_pnl: f64,
@@ -1156,13 +1178,13 @@ pub fn train_reinforce(
         "tanh" => Activation::Tanh,
         _ => Activation::Relu,
     };
-    let mut net = MLP::new(input_size, hidden_size, config.num_layers, activation, config.continuous_action, config.action_std);
-    let mut m = AdamState::zero(&net);
-    let mut v = AdamState::zero(&net);
+    let mut actor = Actor::new(input_size, hidden_size, config.num_layers, activation, config.continuous_action, config.action_std);
+    let mut m = AdamState::zero(&actor.net);
+    let mut v = AdamState::zero(&actor.net);
     let mut rng = rand::rng();
     let mut final_train_reward = 0.0f64;
     let mut reward_ema: Option<f64> = None;
-    let mut best_net = net.clone();
+    let mut best_actor = actor.clone();
     let mut best_val_metric = f64::NEG_INFINITY;
     let mut best_episode = 0usize;
     let mut episodes_since_best = 0usize;
@@ -1173,18 +1195,18 @@ pub fn train_reinforce(
     for ep in 0..config.max_episodes {
         episodes_run = ep + 1;
         if config.continuous_action && config.action_std_schedule {
-            net.action_std = action_std_at_step(config.action_std, ep, config.max_episodes);
+            actor.action_std = action_std_at_step(config.action_std, ep, config.max_episodes);
         }
-        let (steps, episode_return) = rollout(&net, &train_states, closes, train_indices, config, charges, &mut rng);
+        let (steps, episode_return) = rollout(&actor, &train_states, closes, train_indices, config, charges, &mut rng);
         reward_ema = Some(match reward_ema {
             Some(prev) => 0.95 * prev + 0.05 * episode_return,
             None => episode_return,
         });
         final_train_reward = reward_ema.unwrap_or(episode_return);
 
-        let mut grads = Grads::zero(&net);
+        let mut grads = Grads::zero(&actor.net);
         for step in &steps {
-            net.accumulate_grad(&step.state, step.action, step.ret, &mut grads);
+            actor.accumulate_grad(&step.state, step.action, step.ret, &mut grads);
         }
         let n_steps = steps.len() as f64;
         for w in &mut grads.layer_weights {
@@ -1195,7 +1217,7 @@ pub fn train_reinforce(
         }
         macro_rules! norm { ($v:expr) => { for x in $v.iter_mut() { *x /= n_steps; } }; }
         norm!(grads.w_out); norm!(grads.b_out);
-        net.add_regularization(&mut grads, &config.regularization_type, config.regularization_lambda);
+        actor.net.add_regularization(&mut grads, &config.regularization_type, config.regularization_lambda);
         grads.clip_global_norm(config.grad_clip_norm);
 
         let lr = if config.lr_schedule {
@@ -1203,17 +1225,17 @@ pub fn train_reinforce(
         } else {
             config.lr
         };
-        net.apply_adam(&grads, &mut m, &mut v, ep + 1, lr);
+        actor.net.apply_adam(&grads, &mut m, &mut v, ep + 1, lr);
 
         eprintln!("rl reinforce: episode {}/{} return={:.4}", ep, config.max_episodes, final_train_reward);
 
         let mut val_metric_opt: Option<f64> = None;
         if val_states.nrows() > 0 && ((ep + 1) % validation_interval == 0 || ep + 1 == config.max_episodes) {
-            let val_metric = greedy_objective(&net, &val_states, closes, val_indices, config, charges);
+            let val_metric = greedy_objective(&actor, &val_states, closes, val_indices, config, charges);
             val_metric_opt = Some(val_metric);
             if val_metric > best_val_metric + config.min_delta {
                 best_val_metric = val_metric;
-                best_net = net.clone();
+                best_actor = actor.clone();
                 best_episode = ep + 1;
                 episodes_since_best = 0;
             } else {
@@ -1233,18 +1255,18 @@ pub fn train_reinforce(
     }
 
     if best_episode > 0 {
-        net = best_net;
+        actor = best_actor;
     }
 
-    let train_pnl = evaluate(&net, &train_states, closes, train_indices, config.allow_short, charges, config.position_deadband);
+    let train_pnl = evaluate(&actor, &train_states, closes, train_indices, config.allow_short, charges, config.position_deadband);
     let val_pnl = if val_states.nrows() > 0 {
-        evaluate(&net, &val_states, closes, val_indices, config.allow_short, charges, config.position_deadband)
+        evaluate(&actor, &val_states, closes, val_indices, config.allow_short, charges, config.position_deadband)
     } else { 0.0 };
     let test_pnl = if test_states.nrows() > 0 {
-        evaluate(&net, &test_states, closes, test_indices, config.allow_short, charges, config.position_deadband)
+        evaluate(&actor, &test_states, closes, test_indices, config.allow_short, charges, config.position_deadband)
     } else { 0.0 };
     eprintln!("rl reinforce: done. train_pnl={:.4} val_pnl={:.4} test_pnl={:.4}", train_pnl, val_pnl, test_pnl);
-    TrainResult { net, final_train_reward, train_pnl, val_pnl, test_pnl, episodes: episodes_run, best_episode, metrics }
+    TrainResult { actor, final_train_reward, train_pnl, val_pnl, test_pnl, episodes: episodes_run, best_episode, metrics }
 }
 
 pub fn train_ppo(
@@ -1270,11 +1292,14 @@ pub fn train_ppo(
         "tanh" => Activation::Tanh,
         _ => Activation::Relu,
     };
-    let mut net = MLP::new(input_size, hidden_size, config.num_layers, activation, config.continuous_action, config.action_std);
-    let mut m = AdamState::zero(&net);
-    let mut v = AdamState::zero(&net);
+    let mut actor = Actor::new(input_size, hidden_size, config.num_layers, activation.clone(), config.continuous_action, config.action_std);
+    let mut critic = Critic::new(input_size, hidden_size, config.num_layers, activation);
+    let mut actor_m = AdamState::zero(&actor.net);
+    let mut actor_v = AdamState::zero(&actor.net);
+    let mut critic_m = AdamState::zero(&critic.net);
+    let mut critic_v = AdamState::zero(&critic.net);
     let mut rng = rand::rng();
-    let mut best_net = net.clone();
+    let mut best_actor = actor.clone();
     let mut best_val_metric = f64::NEG_INFINITY;
     let mut best_iteration = 0usize;
     let mut iterations_since_best = 0usize;
@@ -1284,7 +1309,6 @@ pub fn train_ppo(
     let validation_interval = config.validation_interval.max(1);
     let ppo_epochs = config.ppo_epochs.max(1);
     let clip_epsilon = config.clip_epsilon;
-    let value_coef = config.value_coef;
     let gae_lambda = config.gae_lambda;
     let batch_episodes = config.batch_episodes.max(1);
 
@@ -1300,7 +1324,7 @@ pub fn train_ppo(
             config.lr
         };
         if config.continuous_action && config.action_std_schedule {
-            net.action_std = action_std_at_step(config.action_std, iteration, config.max_episodes);
+            actor.action_std = action_std_at_step(config.action_std, iteration, config.max_episodes);
         }
 
         let mut batch_states: Vec<Vec<f64>> = vec![];
@@ -1314,7 +1338,7 @@ pub fn train_ppo(
             .into_par_iter()
             .map(|_| {
                 let mut rng = rand::rng();
-                let (traj, ep_return, bootstrap_value) = rollout_ppo(&net, &train_states, closes, train_indices, config, charges, &mut rng);
+                let (traj, ep_return, bootstrap_value) = rollout_ppo(&actor, &critic, &train_states, closes, train_indices, config, charges, &mut rng);
                 let traj_rewards: Vec<f64> = traj.iter().map(|t| t.reward).collect();
                 let traj_values: Vec<f64> = traj.iter().map(|t| t.value).collect();
                 let advantages = gae(&traj_rewards, &traj_values, config.gamma, gae_lambda, bootstrap_value);
@@ -1354,35 +1378,44 @@ pub fn train_ppo(
             indices.shuffle(&mut rng);
 
             for chunk in indices.chunks(minibatch_size) {
-                let mut grads = Grads::zero(&net);
+                let mut actor_grads = Grads::zero(&actor.net);
+                let mut critic_grads = Grads::zero(&critic.net);
                 for &idx in chunk {
-                    net.accumulate_grad_ppo(
+                    actor.accumulate_grad_ppo(
                         &batch_states[idx],
                         batch_actions[idx],
                         batch_log_probs[idx],
                         normalized_advantages[idx],
-                        batch_returns[idx],
                         clip_epsilon,
-                        value_coef,
                         current_entropy_coef,
-                        &mut grads,
+                        &mut actor_grads,
                     );
+                    critic.accumulate_grad(&batch_states[idx], batch_returns[idx], &mut critic_grads);
                 }
 
                 let n = chunk.len() as f64;
-                for w in &mut grads.layer_weights {
+                for w in &mut actor_grads.layer_weights {
                     for x in w.iter_mut() { *x /= n; }
                 }
-                for b in &mut grads.layer_biases {
+                for b in &mut actor_grads.layer_biases {
                     for x in b.iter_mut() { *x /= n; }
                 }
                 macro_rules! scale { ($v:expr) => { for x in $v.iter_mut() { *x /= n; } }; }
-                scale!(grads.w_out); scale!(grads.b_out); scale!(grads.w_value);
-                grads.b_value /= n;
-                net.add_regularization(&mut grads, &config.regularization_type, config.regularization_lambda);
-                grads.clip_global_norm(config.grad_clip_norm);
+                scale!(actor_grads.w_out); scale!(actor_grads.b_out);
+                actor.net.add_regularization(&mut actor_grads, &config.regularization_type, config.regularization_lambda);
+                actor_grads.clip_global_norm(config.grad_clip_norm);
+                actor.net.apply_adam(&actor_grads, &mut actor_m, &mut actor_v, iteration + 1, current_lr);
 
-                net.apply_adam(&grads, &mut m, &mut v, iteration + 1, current_lr);
+                for w in &mut critic_grads.layer_weights {
+                    for x in w.iter_mut() { *x /= n; }
+                }
+                for b in &mut critic_grads.layer_biases {
+                    for x in b.iter_mut() { *x /= n; }
+                }
+                scale!(critic_grads.w_out); scale!(critic_grads.b_out);
+                critic.net.add_regularization(&mut critic_grads, &config.regularization_type, config.regularization_lambda);
+                critic_grads.clip_global_norm(config.grad_clip_norm);
+                critic.net.apply_adam(&critic_grads, &mut critic_m, &mut critic_v, iteration + 1, current_lr);
             }
         }
 
@@ -1390,11 +1423,11 @@ pub fn train_ppo(
 
         let mut val_metric_opt: Option<f64> = None;
         if val_states.nrows() > 0 && ((iteration + 1) % validation_interval == 0 || iteration + 1 == config.max_episodes) {
-            let val_metric = greedy_objective(&net, &val_states, closes, val_indices, config, charges);
+            let val_metric = greedy_objective(&actor, &val_states, closes, val_indices, config, charges);
             val_metric_opt = Some(val_metric);
             if val_metric > best_val_metric + config.min_delta {
                 best_val_metric = val_metric;
-                best_net = net.clone();
+                best_actor = actor.clone();
                 best_iteration = iteration + 1;
                 iterations_since_best = 0;
             } else {
@@ -1414,23 +1447,23 @@ pub fn train_ppo(
     }
 
     if best_iteration > 0 {
-        net = best_net;
+        actor = best_actor;
     }
 
-    let train_pnl = evaluate(&net, &train_states, closes, train_indices, config.allow_short, charges, config.position_deadband);
+    let train_pnl = evaluate(&actor, &train_states, closes, train_indices, config.allow_short, charges, config.position_deadband);
     let val_pnl = if val_states.nrows() > 0 {
-        evaluate(&net, &val_states, closes, val_indices, config.allow_short, charges, config.position_deadband)
+        evaluate(&actor, &val_states, closes, val_indices, config.allow_short, charges, config.position_deadband)
     } else { 0.0 };
     let test_pnl = if test_states.nrows() > 0 {
-        evaluate(&net, &test_states, closes, test_indices, config.allow_short, charges, config.position_deadband)
+        evaluate(&actor, &test_states, closes, test_indices, config.allow_short, charges, config.position_deadband)
     } else { 0.0 };
     eprintln!("rl ppo: done. train_pnl={:.4} val_pnl={:.4} test_pnl={:.4}", train_pnl, val_pnl, test_pnl);
     let best_episode_actual = if best_iteration > 0 { best_iteration * batch_episodes } else { 0 };
-    TrainResult { net, final_train_reward: metrics.last().map(|m| m.train_reward).unwrap_or(0.0), train_pnl, val_pnl, test_pnl, episodes: total_episodes, best_episode: best_episode_actual, metrics }
+    TrainResult { actor, final_train_reward: metrics.last().map(|m| m.train_reward).unwrap_or(0.0), train_pnl, val_pnl, test_pnl, episodes: total_episodes, best_episode: best_episode_actual, metrics }
 }
 
 pub fn evaluate(
-    net: &MLP,
+    actor: &Actor,
     states: &Array2<f64>,
     closes: &[f64],
     candle_indices: &[usize],
@@ -1449,9 +1482,9 @@ pub fn evaluate(
         let state = states.row(t).to_vec();
         let price = closes[candle_indices[t]];
         let state = decision_state(&state, position, holding, entry_price, price);
-        let action = net.greedy_action(&state, allow_short);
+        let action = actor.greedy_action(&state, allow_short);
 
-        if net.continuous_action {
+        if actor.continuous_action {
             let delta = action - position;
             if delta.abs() >= position_deadband {
                 if position > 0.0 && action < position {
@@ -1508,8 +1541,8 @@ pub fn evaluate(
     total_pnl
 }
 
-pub fn weights_to_bytes(net: &MLP) -> Result<Vec<u8>, String> {
-    let params = net.params();
+pub fn weights_to_bytes(actor: &Actor) -> Result<Vec<u8>, String> {
+    let params = actor.net.params();
     if params.iter().any(|v| !v.is_finite()) {
         return Err("training diverged: network weights contain NaN/Inf".to_string());
     }
@@ -1521,10 +1554,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_mlp_forward_discrete() {
-        let net = MLP::new(5, 4, 2, Activation::Tanh, false, 0.3);
+    fn test_mlp_forward() {
+        let net = MLP::new(5, 4, 2, Activation::Tanh, 3);
         let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let (pre, acts, probs) = net.forward_full(&x);
+        let (pre, acts, logits) = net.forward(&x);
+        assert_eq!(pre.len(), 2);
+        assert_eq!(acts.len(), 2);
+        assert_eq!(logits.len(), 3);
+    }
+
+    #[test]
+    fn test_actor_forward_discrete() {
+        let actor = Actor::new(5, 4, 2, Activation::Tanh, false, 0.3);
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let (pre, acts, probs) = actor.forward_full(&x);
         assert_eq!(pre.len(), 2);
         assert_eq!(acts.len(), 2);
         assert!(probs.iter().all(|&p| p >= 0.0 && p <= 1.0));
@@ -1532,21 +1575,20 @@ mod tests {
     }
 
     #[test]
-    fn test_mlp_forward_continuous() {
-        let net = MLP::new(5, 4, 2, Activation::Tanh, true, 0.3);
+    fn test_actor_forward_continuous() {
+        let actor = Actor::new(5, 4, 2, Activation::Tanh, true, 0.3);
         let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let (_, _, probs) = net.forward_full(&x);
+        let (_, _, probs) = actor.forward_full(&x);
         assert!(probs[0] >= -1.0 && probs[0] <= 1.0);
     }
 
     #[test]
-    fn test_mlp_grads_reinforce() {
-        let net = MLP::new(5, 4, 2, Activation::Tanh, false, 0.3);
+    fn test_actor_grads_reinforce() {
+        let actor = Actor::new(5, 4, 2, Activation::Tanh, false, 0.3);
         let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let mut grads = Grads::zero(&net);
-        net.accumulate_grad(&x, 0.0, 1.0, &mut grads);
+        let mut grads = Grads::zero(&actor.net);
+        actor.accumulate_grad(&x, 0.0, 1.0, &mut grads);
 
-        // All gradient arrays should be non-zero after backward pass
         for w in &grads.layer_weights {
             assert!(w.iter().any(|&v| v != 0.0), "layer weight gradient should be non-zero");
         }
@@ -1558,11 +1600,11 @@ mod tests {
     }
 
     #[test]
-    fn test_mlp_grads_ppo() {
-        let net = MLP::new(5, 4, 2, Activation::Tanh, false, 0.3);
+    fn test_actor_grads_ppo() {
+        let actor = Actor::new(5, 4, 2, Activation::Tanh, false, 0.3);
         let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let mut grads = Grads::zero(&net);
-        net.accumulate_grad_ppo(&x, 0.0, -0.5, 1.0, 0.5, 0.2, 0.5, 0.01, &mut grads);
+        let mut grads = Grads::zero(&actor.net);
+        actor.accumulate_grad_ppo(&x, 0.0, -0.5, 1.0, 0.2, 0.01, &mut grads);
 
         for w in &grads.layer_weights {
             assert!(w.iter().any(|&v| v != 0.0), "layer weight gradient should be non-zero");
@@ -1570,47 +1612,62 @@ mod tests {
         for b in &grads.layer_biases {
             assert!(b.iter().any(|&v| v != 0.0), "layer bias gradient should be non-zero");
         }
-        assert!(grads.w_value.iter().any(|&v| v != 0.0), "w_value gradient should be non-zero");
+        assert!(grads.w_out.iter().any(|&v| v != 0.0), "w_out gradient should be non-zero");
+    }
+
+    #[test]
+    fn test_critic_forward_and_grads() {
+        let critic = Critic::new(5, 4, 2, Activation::Tanh);
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let value = critic.forward_value(&x);
+        assert!(value.is_finite());
+
+        let mut grads = Grads::zero(&critic.net);
+        critic.accumulate_grad(&x, 0.5, &mut grads);
+
+        for w in &grads.layer_weights {
+            assert!(w.iter().any(|&v| v != 0.0), "layer weight gradient should be non-zero");
+        }
+        for b in &grads.layer_biases {
+            assert!(b.iter().any(|&v| v != 0.0), "layer bias gradient should be non-zero");
+        }
+        assert!(grads.w_out.iter().any(|&v| v != 0.0), "w_out gradient should be non-zero");
     }
 
     #[test]
     fn test_mlp_adam_update() {
-        let mut net = MLP::new(5, 4, 2, Activation::Tanh, false, 0.3);
+        let mut actor = Actor::new(5, 4, 2, Activation::Tanh, false, 0.3);
         let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let mut grads = Grads::zero(&net);
-        net.accumulate_grad(&x, 0.0, 1.0, &mut grads);
+        let mut grads = Grads::zero(&actor.net);
+        actor.accumulate_grad(&x, 0.0, 1.0, &mut grads);
 
-        let mut m = AdamState::zero(&net);
-        let mut v = AdamState::zero(&net);
-        net.apply_adam(&grads, &mut m, &mut v, 1, 1e-3);
+        let mut m = AdamState::zero(&actor.net);
+        let mut v = AdamState::zero(&actor.net);
+        actor.net.apply_adam(&grads, &mut m, &mut v, 1, 1e-3);
 
-        // Params should have changed
-        let params_after = net.params();
+        let params_after = actor.net.params();
         assert!(params_after.iter().any(|&v| v != 0.0));
     }
 
     #[test]
     fn test_mlp_params_roundtrip() {
-        let net = MLP::new(5, 4, 2, Activation::Tanh, false, 0.3);
-        let params = net.params();
+        let actor = Actor::new(5, 4, 2, Activation::Tanh, false, 0.3);
+        let params = actor.net.params();
         assert!(!params.is_empty());
         assert!(params.iter().all(|v| v.is_finite()));
     }
 
     #[test]
     fn test_mlp_regularization() {
-        let net = MLP::new(5, 4, 2, Activation::Tanh, false, 0.3);
-        let mut grads = Grads::zero(&net);
+        let actor = Actor::new(5, 4, 2, Activation::Tanh, false, 0.3);
+        let mut grads = Grads::zero(&actor.net);
 
-        // L2 on zero gradients: grads should become exactly lambda * weights
-        net.add_regularization(&mut grads, "l2", 0.01);
-        for (w, g) in net.layer_weights.iter().zip(&grads.layer_weights) {
+        actor.net.add_regularization(&mut grads, "l2", 0.01);
+        for (w, g) in actor.net.layer_weights.iter().zip(&grads.layer_weights) {
             let expected = w * 0.01;
             assert!(expected.iter().zip(g.iter()).all(|(e, a)| (e - a).abs() < 1e-12));
         }
-        let expected_w_out = &net.w_out * 0.01;
+        let expected_w_out = &actor.net.w_out * 0.01;
         assert!(expected_w_out.iter().zip(grads.w_out.iter()).all(|(e, a)| (e - a).abs() < 1e-12));
-        let expected_w_value = &net.w_value * 0.01;
-        assert!(expected_w_value.iter().zip(grads.w_value.iter()).all(|(e, a)| (e - a).abs() < 1e-12));
     }
 }

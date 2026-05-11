@@ -1,10 +1,10 @@
 use ndarray::Array2;
-use crate::rl::train::{MLP, Activation};
+use crate::rl::train::{Actor, Activation};
 use crate::rl::features::IndicatorSpec;
 
-fn dominant_logit(net: &MLP, x: &[f64]) -> f64 {
-    let (_, _, probs) = net.forward_full(x);
-    if net.continuous_action {
+fn dominant_logit(actor: &Actor, x: &[f64]) -> f64 {
+    let (_, _, probs) = actor.forward_full(x);
+    if actor.continuous_action {
         probs[0] // mean
     } else {
         // buy prob minus hold prob as signal strength
@@ -12,20 +12,20 @@ fn dominant_logit(net: &MLP, x: &[f64]) -> f64 {
     }
 }
 
-pub fn feature_importance(net: &MLP, states: &Array2<f64>) -> Vec<f64> {
+pub fn feature_importance(actor: &Actor, states: &Array2<f64>) -> Vec<f64> {
     let n = states.nrows();
     let d = states.ncols();
     if n == 0 { return vec![0.0; d]; }
 
     let baseline: Vec<f64> = (0..n)
-        .map(|i| { let s = states.row(i).to_vec(); dominant_logit(net, &s) })
+        .map(|i| { let s = states.row(i).to_vec(); dominant_logit(actor, &s) })
         .collect();
 
     (0..d).map(|j| {
         let diff: f64 = (0..n).map(|i| {
             let mut s = states.row(i).to_vec();
             s[j] = 0.0;
-            (baseline[i] - dominant_logit(net, &s)).abs()
+            (baseline[i] - dominant_logit(actor, &s)).abs()
         }).sum::<f64>() / n as f64;
         diff
     }).collect()
@@ -157,7 +157,7 @@ fn indicator_expr(spec: &IndicatorSpec) -> String {
 }
 
 pub fn net_to_rust(
-    net: &MLP,
+    actor: &Actor,
     indicator_specs: &[IndicatorSpec],
     lookback: usize,
     means: &[f64],
@@ -170,16 +170,16 @@ pub fn net_to_rust(
 
     lines.push(format!("    if i < {} {{ return 0.0; }}", lookback));
 
-    for (idx, (w, b)) in net.layer_weights.iter().zip(&net.layer_biases).enumerate() {
+    for (idx, (w, b)) in actor.net.layer_weights.iter().zip(&actor.net.layer_biases).enumerate() {
         lines.push(format!("    let w{}: &[f64] = {};", idx, fmt_array2(w)));
         lines.push(format!("    let b{}: &[f64] = {};", idx, fmt_array1(b)));
     }
-    lines.push(format!("    let w_out: &[f64] = {};", fmt_array2(&net.w_out)));
-    lines.push(format!("    let b_out: &[f64] = {};", fmt_array1(&net.b_out)));
+    lines.push(format!("    let w_out: &[f64] = {};", fmt_array2(&actor.net.w_out)));
+    lines.push(format!("    let b_out: &[f64] = {};", fmt_array1(&actor.net.b_out)));
     lines.push(format!("    let means: &[f64] = {};", fmt_slice(means)));
     lines.push(format!("    let stds: &[f64] = {};", fmt_slice(stds)));
-    lines.push(format!("    let hidden = {};", net.hidden_size));
-    lines.push(format!("    let input = {};", net.input_size));
+    lines.push(format!("    let hidden = {};", actor.net.hidden_size));
+    lines.push(format!("    let input = {};", actor.net.input_size));
 
     lines.push(format!("    let mut feat = vec![0.0_f64; {}];", state_dim));
     for (idx, spec) in indicator_specs.iter().enumerate() {
@@ -200,20 +200,20 @@ pub fn net_to_rust(
     lines.push("    feat[off + 1] = norm_holding;".into());
     lines.push("    feat[off + 2] = norm_unrealized;".into());
 
-    let act = match net.activation {
+    let act = match actor.net.activation {
         Activation::Tanh => "tanh()",
         Activation::Relu => "max(0.0)",
     };
 
     lines.push("    let mm = |w: &[f64], x: &[f64], r: usize, c: usize| -> Vec<f64> { (0..r).map(|i| (0..c).map(|j| w[i*c+j]*x[j]).sum::<f64>()).collect() };".into());
     lines.push("    let mut h = feat;".into());
-    for (idx, _) in net.layer_weights.iter().enumerate() {
+    for (idx, _) in actor.net.layer_weights.iter().enumerate() {
         let prev = if idx == 0 { "input" } else { "hidden" };
         lines.push(format!(
             "    h = mm(w{idx},&h,hidden,{prev}).into_iter().zip(b{idx}).map(|(v,b)| (v+b).{act}).collect();"
         ));
     }
-    if net.continuous_action {
+    if actor.continuous_action {
         lines.push("    mm(w_out,&h,1,hidden).into_iter().zip(b_out).map(|(v,b)| (v+b).tanh()).next().unwrap()".into());
     } else {
         lines.push("    let lo: Vec<f64> = mm(w_out,&h,3,hidden).into_iter().zip(b_out).map(|(v,b)| v+b).collect();".into());
@@ -232,12 +232,12 @@ pub fn net_to_rust(
     lines.join("\n")
 }
 
-pub fn distil(net: &MLP, states: &Array2<f64>, feature_names: &[String], max_depth: usize) -> String {
+pub fn distil(actor: &Actor, states: &Array2<f64>, feature_names: &[String], max_depth: usize) -> String {
     let n = states.nrows();
     if n == 0 { return "No data".into(); }
 
     let state_vecs: Vec<Vec<f64>> = (0..n).map(|i| states.row(i).to_vec()).collect();
-    let scores: Vec<f64> = state_vecs.iter().map(|s| dominant_logit(net, s)).collect();
+    let scores: Vec<f64> = state_vecs.iter().map(|s| dominant_logit(actor, s)).collect();
 
     let tree = build_tree(&state_vecs, &scores, 0, max_depth);
     format!("Thresholds are shown in normalized feature space.\n{}", tree.to_text(feature_names, 0))
