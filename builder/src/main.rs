@@ -914,7 +914,7 @@ async fn process_rl_job(
         episode_steps: states.nrows().min(200),
         validation_interval: 10,
         early_stopping_patience: 100,
-        min_delta: 1e-6,
+        min_delta: 1e-3,
         grad_clip_norm: 1.0,
         lr,
         actor_lr,
