@@ -18,7 +18,7 @@
 				<a href="/strategies/{s.id}" class="strategy-row">
 					<div class="strategy-info">
 						<span class="name">{s.name}</span>
-						<span class="meta">Created {new Date(s.created_at).toLocaleDateString('en-IN')}</span>
+						<span class="meta">Created {new Date(s.created_at).toLocaleDateString('en-IN')}{#if s.interval} · {s.interval}{/if}</span>
 					</div>
 					<span class="badge {s.strategy_type === 'rl' ? 'rl' : s.wasm_key ? 'ready' : 'draft'}">
 						{s.strategy_type === 'rl' ? 'RL' : s.wasm_key ? 'WASM ready' : 'No WASM'}

@@ -1,27 +1,137 @@
 use ndarray::Array2;
-use crate::rl::train::MLP;
+use crate::rl::train::{Actor, Activation};
 use crate::rl::features::IndicatorSpec;
 
-fn dominant_logit(net: &MLP, x: &[f64]) -> f64 {
-    let (_, _, probs) = net.forward_full(x);
-    // buy prob minus hold prob as signal strength
-    probs[1] - probs[0]
+/// Code generation descriptor for a transformed feature.
+/// The `expr` is a Rust expression string that evaluates to the feature value at index `i`.
+pub struct FeatureCodegen {
+    #[allow(dead_code)]
+    pub name: String,
+    pub expr: String,
 }
 
-pub fn feature_importance(net: &MLP, states: &Array2<f64>) -> Vec<f64> {
+/// Generate Rust expressions for stationary-transformed features.
+/// This MUST match the logic in `features::stationary_transform` exactly.
+pub fn codegen_transforms(specs: &[IndicatorSpec]) -> Vec<FeatureCodegen> {
+    use std::collections::HashMap;
+    let mut out = vec![];
+
+    // Group BB components by period
+    let mut bb_groups: HashMap<usize, (Option<usize>, Option<usize>, Option<usize>)> = HashMap::new();
+    for (idx, spec) in specs.iter().enumerate() {
+        if let IndicatorSpec::Bb { component, period } = spec {
+            let entry = bb_groups.entry(*period).or_insert((None, None, None));
+            match component.as_str() {
+                "upper" => entry.0 = Some(idx),
+                "middle" => entry.1 = Some(idx),
+                "lower" => entry.2 = Some(idx),
+                _ => {}
+            }
+        }
+    }
+
+    for spec in specs {
+        match spec {
+            IndicatorSpec::Ema { period } => {
+                out.push(FeatureCodegen {
+                    name: format!("ema_{}_dist", period),
+                    expr: format!("{{ let ema = ema(prices, {}); (prices[i] - ema[i]) / ema[i].max(1e-8) }}", period),
+                });
+            }
+            IndicatorSpec::Rsi { period } => {
+                out.push(FeatureCodegen {
+                    name: format!("rsi_{}_centered", period),
+                    expr: format!("{{ let rsi = rsi(prices, {}); (rsi[i] - 50.0) / 50.0 }}", period),
+                });
+            }
+            IndicatorSpec::Bb { component: _, period } => {
+                // Only process each BB period once, when we see upper
+                if let Some((Some(_), Some(_), Some(_))) = bb_groups.get(period) {
+                    // Generate bandwidth
+                    out.push(FeatureCodegen {
+                        name: format!("bb_{}_bandwidth", period),
+                        expr: format!(
+                            "{{ let (u, m, l) = bb(prices, {}); (u[i] - l[i]) / m[i].max(1e-8) }}",
+                            period
+                        ),
+                    });
+                    // Generate %B
+                    out.push(FeatureCodegen {
+                        name: format!("bb_{}_percent_b", period),
+                        expr: format!(
+                            "{{ let (u, m, l) = bb(prices, {}); let range = u[i] - l[i]; if range < 1e-8 {{ 0.5 }} else {{ (prices[i] - l[i]) / range }} }}",
+                            period
+                        ),
+                    });
+                    // Remove from map so we don't duplicate
+                    bb_groups.remove(period);
+                }
+            }
+            IndicatorSpec::Obv => {
+                out.push(FeatureCodegen {
+                    name: "obv_delta_norm".into(),
+                    expr: "{ let obv = obv(prices, volumes); let delta = if i > 0 { obv[i] - obv[i-1] } else { 0.0 }; let window = 20usize; if i >= window { let mean: f64 = (1..=window).map(|k| obv[i-k+1] - obv[i-k]).sum::<f64>() / window as f64; let std = ((1..=window).map(|k| { let d = obv[i-k+1] - obv[i-k]; (d - mean).powi(2) }).sum::<f64>() / window as f64).sqrt().max(1e-8); (delta - mean) / std } else { f64::NAN } }".into(),
+                });
+            }
+            _ => {
+                // Passthrough for any other indicators (backward compatibility)
+                let expr = indicator_expr_raw(spec);
+                out.push(FeatureCodegen {
+                    name: spec.name(),
+                    expr: format!("{{ let v = {}; v[i] }}", expr),
+                });
+            }
+        }
+    }
+    out
+}
+
+fn indicator_expr_raw(spec: &IndicatorSpec) -> String {
+    match spec {
+        IndicatorSpec::Rsi { period } => format!("rsi(prices, {})", period),
+        IndicatorSpec::Sma { period } => format!("sma(prices, {})", period),
+        IndicatorSpec::Ema { period } => format!("ema(prices, {})", period),
+        IndicatorSpec::Wma { period } => format!("wma(prices, {})", period),
+        IndicatorSpec::Vwap => "vwap(prices, volumes)".into(),
+        IndicatorSpec::Macd { component, fast, slow, signal_period } => {
+            let pat = match component.as_str() { "signal" => "(_, v, _)", "histogram" => "(_, _, v)", _ => "(v, _, _)" };
+            format!("{{ let {} = macd(prices, {}, {}, {}); v }}", pat, fast, slow, signal_period)
+        }
+        IndicatorSpec::Bb { component, period } => {
+            let pat = match component.as_str() { "middle" => "(_, v, _)", "lower" => "(_, _, v)", _ => "(v, _, _)" };
+            format!("{{ let {} = bb(prices, {}); v }}", pat, period)
+        }
+        IndicatorSpec::Atr { period } => format!("atr(highs, lows, prices, {})", period),
+        IndicatorSpec::Stoch { period } => format!("stoch(highs, lows, prices, {})", period),
+        IndicatorSpec::Obv => "obv(prices, volumes)".into(),
+        IndicatorSpec::Cci { period } => format!("cci(highs, lows, prices, {})", period),
+    }
+}
+
+fn dominant_logit(actor: &Actor, x: &[f64]) -> f64 {
+    let (_, _, probs) = actor.forward_full(x);
+    if actor.continuous_action {
+        probs[0] // mean
+    } else {
+        // buy prob minus hold prob as signal strength
+        probs[1] - probs[0]
+    }
+}
+
+pub fn feature_importance(actor: &Actor, states: &Array2<f64>) -> Vec<f64> {
     let n = states.nrows();
     let d = states.ncols();
     if n == 0 { return vec![0.0; d]; }
 
     let baseline: Vec<f64> = (0..n)
-        .map(|i| { let s = states.row(i).to_vec(); dominant_logit(net, &s) })
+        .map(|i| { let s = states.row(i).to_vec(); dominant_logit(actor, &s) })
         .collect();
 
     (0..d).map(|j| {
         let diff: f64 = (0..n).map(|i| {
             let mut s = states.row(i).to_vec();
             s[j] = 0.0;
-            (baseline[i] - dominant_logit(net, &s)).abs()
+            (baseline[i] - dominant_logit(actor, &s)).abs()
         }).sum::<f64>() / n as f64;
         diff
     }).collect()
@@ -120,68 +230,63 @@ fn fmt_slice(v: &[f64]) -> String {
     format!("&[{}]", vals.join(","))
 }
 
-fn indicator_expr(spec: &IndicatorSpec) -> String {
-    match spec {
-        IndicatorSpec::Rsi { period } => format!("rsi(prices, {})", period),
-        IndicatorSpec::Sma { period } => format!("sma(prices, {})", period),
-        IndicatorSpec::Ema { period } => format!("ema(prices, {})", period),
-        IndicatorSpec::Wma { period } => format!("wma(prices, {})", period),
-        IndicatorSpec::Vwap => "vwap(prices, volumes)".into(),
-        IndicatorSpec::Macd { component, fast, slow, signal_period } => {
-            let pat = match component.as_str() { "signal" => "(_, v, _)", "histogram" => "(_, _, v)", _ => "(v, _, _)" };
-            format!("{{ let {} = macd(prices, {}, {}, {}); v }}", pat, fast, slow, signal_period)
-        }
-        IndicatorSpec::Bb { component, period } => {
-            let pat = match component.as_str() { "middle" => "(_, v, _)", "lower" => "(_, _, v)", _ => "(v, _, _)" };
-            format!("{{ let {} = bb(prices, {}); v }}", pat, period)
-        }
-        IndicatorSpec::Atr { period } => format!("atr(highs, lows, prices, {})", period),
-        IndicatorSpec::Stoch { period } => format!("stoch(highs, lows, prices, {})", period),
-        IndicatorSpec::Obv => "obv(prices, volumes)".into(),
-        IndicatorSpec::Cci { period } => format!("cci(highs, lows, prices, {})", period),
-    }
+fn fmt_array1(v: &ndarray::Array1<f64>) -> String {
+    let vals: Vec<String> = v.iter().map(|x| format!("{:.10}_f64", x)).collect();
+    format!("&[{}]", vals.join(","))
 }
 
+fn fmt_array2(v: &ndarray::Array2<f64>) -> String {
+    let vals: Vec<String> = v.iter().map(|x| format!("{:.10}_f64", x)).collect();
+    format!("&[{}]", vals.join(","))
+}
+
+
+
 pub fn net_to_rust(
-    net: &MLP,
-    indicator_specs: &[IndicatorSpec],
+    actor: &Actor,
+    features: &[FeatureCodegen],
     lookback: usize,
     means: &[f64],
     stds: &[f64],
     allow_short: bool,
 ) -> String {
-    let num_inds = indicator_specs.len();
+    let num_inds = features.len();
     let state_dim = num_inds + 5 * lookback + 3;
     let mut lines: Vec<String> = vec![];
 
-    lines.push(format!("    if i < {} {{ return 0; }}", lookback));
+    lines.push(format!("    if i < {} {{ return 0.0; }}", lookback));
 
-    // Embed weights and normalization stats
-    lines.push(format!("    let w1: &[f64] = {};", fmt_slice(&net.w1)));
-    lines.push(format!("    let b1: &[f64] = {};", fmt_slice(&net.b1)));
-    lines.push(format!("    let w2: &[f64] = {};", fmt_slice(&net.w2)));
-    lines.push(format!("    let b2: &[f64] = {};", fmt_slice(&net.b2)));
-    lines.push(format!("    let w_out: &[f64] = {};", fmt_slice(&net.w_out)));
-    lines.push(format!("    let b_out: &[f64] = {};", fmt_slice(&net.b_out)));
+    for (idx, (w, b)) in actor.net.layer_weights.iter().zip(&actor.net.layer_biases).enumerate() {
+        lines.push(format!("    let w{}: &[f64] = {};", idx, fmt_array2(w)));
+        lines.push(format!("    let b{}: &[f64] = {};", idx, fmt_array1(b)));
+    }
+    lines.push(format!("    let w_out: &[f64] = {};", fmt_array2(&actor.net.w_out)));
+    lines.push(format!("    let b_out: &[f64] = {};", fmt_array1(&actor.net.b_out)));
     lines.push(format!("    let means: &[f64] = {};", fmt_slice(means)));
     lines.push(format!("    let stds: &[f64] = {};", fmt_slice(stds)));
-    lines.push(format!("    let hidden = {};", net.hidden_size));
-    lines.push(format!("    let input = {};", net.input_size));
+    lines.push(format!("    let hidden = {};", actor.net.hidden_size));
+    lines.push(format!("    let input = {};", actor.net.input_size));
 
-    // Build and normalize feature vector — same ordering as build_state_matrix
     lines.push(format!("    let mut feat = vec![0.0_f64; {}];", state_dim));
-    for (idx, spec) in indicator_specs.iter().enumerate() {
-        let expr = indicator_expr(spec);
+    for (idx, feat) in features.iter().enumerate() {
         lines.push(format!(
-            "    feat[{idx}] = {{ let v = {expr}; if v[i].is_nan() {{ return 255; }} (v[i] - means[{idx}]) / stds[{idx}] }};"
+            "    feat[{idx}] = {{ let v = {}; if v.is_nan() {{ return f64::NAN; }} (v - means[{idx}]) / stds[{idx}] }};",
+            feat.expr
         ));
     }
     lines.push(format!("    let mut off = {};", num_inds));
+    lines.push("    let current_close = prices[i].max(1e-8);".into());
+    lines.push("    let current_vol = volumes[i].max(1e-8);".into());
     lines.push(format!("    for lag in 1_usize..={} {{", lookback));
     lines.push("        let t = i - lag;".into());
-    // Use close as a fallback for older WASM callers that do not provide opens.
     lines.push("        let open = if opens.len() > t { opens[t] } else { prices[t] };".into());
-    lines.push("        let raw = [open, highs[t], lows[t], prices[t], volumes[t]];".into());
+    lines.push("        let raw = [".into());
+    lines.push("            (open - current_close) / current_close,".into());
+    lines.push("            (highs[t] - current_close) / current_close,".into());
+    lines.push("            (lows[t] - current_close) / current_close,".into());
+    lines.push("            (prices[t] - current_close) / current_close,".into());
+    lines.push("            (volumes[t] - current_vol) / current_vol,".into());
+    lines.push("        ];".into());
     lines.push("        for k in 0..5_usize { feat[off+k] = (raw[k] - means[off+k]) / stds[off+k]; }".into());
     lines.push("        off += 5;".into());
     lines.push("    }".into());
@@ -189,31 +294,44 @@ pub fn net_to_rust(
     lines.push("    feat[off + 1] = norm_holding;".into());
     lines.push("    feat[off + 2] = norm_unrealized;".into());
 
-    // Forward pass: input -> tanh -> tanh -> softmax
-    lines.push("    let mm = |w: &[f64], x: &[f64], r: usize, c: usize| -> Vec<f64> { (0..r).map(|i| (0..c).map(|j| w[i*c+j]*x[j]).sum::<f64>()).collect() };".into());
-    lines.push("    let h1: Vec<f64> = mm(w1,&feat,hidden,input).into_iter().zip(b1).map(|(v,b)| (v+b).tanh()).collect();".into());
-    lines.push("    let h2: Vec<f64> = mm(w2,&h1,hidden,hidden).into_iter().zip(b2).map(|(v,b)| (v+b).tanh()).collect();".into());
-    lines.push("    let lo: Vec<f64> = mm(w_out,&h2,3,hidden).into_iter().zip(b_out).map(|(v,b)| v+b).collect();".into());
-    lines.push("    let mx = lo.iter().cloned().fold(f64::NEG_INFINITY, f64::max);".into());
-    lines.push("    let ex: Vec<f64> = lo.iter().map(|v| (v-mx).exp()).collect();".into());
-    lines.push("    let s: f64 = ex.iter().sum();".into());
-    lines.push("    let p = [ex[0]/s, ex[1]/s, ex[2]/s];".into());
+    let act = match actor.net.activation {
+        Activation::Tanh => "tanh()",
+        Activation::Relu => "max(0.0)",
+    };
 
-    if allow_short {
-        lines.push("    if p[1] >= p[0] && p[1] >= p[2] { 1u8 } else if p[2] >= p[0] { 2u8 } else { 0u8 }".into());
+    lines.push("    let mm = |w: &[f64], x: &[f64], r: usize, c: usize| -> Vec<f64> { (0..r).map(|i| (0..c).map(|j| w[i*c+j]*x[j]).sum::<f64>()).collect() };".into());
+    lines.push("    let mut h = feat;".into());
+    for (idx, _) in actor.net.layer_weights.iter().enumerate() {
+        let prev = if idx == 0 { "input" } else { "hidden" };
+        lines.push(format!(
+            "    h = mm(w{idx},&h,hidden,{prev}).into_iter().zip(b{idx}).map(|(v,b)| (v+b).{act}).collect();"
+        ));
+    }
+    if actor.continuous_action {
+        lines.push("    mm(w_out,&h,1,hidden).into_iter().zip(b_out).map(|(v,b)| (v+b).tanh()).next().unwrap()".into());
     } else {
-        lines.push("    if p[1] >= p[0] { 1u8 } else { 0u8 }".into());
+        lines.push("    let lo: Vec<f64> = mm(w_out,&h,3,hidden).into_iter().zip(b_out).map(|(v,b)| v+b).collect();".into());
+        lines.push("    let mx = lo.iter().cloned().fold(f64::NEG_INFINITY, f64::max);".into());
+        lines.push("    let ex: Vec<f64> = lo.iter().map(|v| (v-mx).exp()).collect();".into());
+        lines.push("    let s: f64 = ex.iter().sum();".into());
+        lines.push("    let p = [ex[0]/s, ex[1]/s, ex[2]/s];".into());
+
+        if allow_short {
+            lines.push("    if p[1] >= p[0] && p[1] >= p[2] { 1.0 } else if p[2] >= p[0] { -1.0 } else { 0.0 }".into());
+        } else {
+            lines.push("    if p[1] >= p[0] { 1.0 } else { 0.0 }".into());
+        }
     }
 
     lines.join("\n")
 }
 
-pub fn distil(net: &MLP, states: &Array2<f64>, feature_names: &[String], max_depth: usize) -> String {
+pub fn distil(actor: &Actor, states: &Array2<f64>, feature_names: &[String], max_depth: usize) -> String {
     let n = states.nrows();
     if n == 0 { return "No data".into(); }
 
     let state_vecs: Vec<Vec<f64>> = (0..n).map(|i| states.row(i).to_vec()).collect();
-    let scores: Vec<f64> = state_vecs.iter().map(|s| dominant_logit(net, s)).collect();
+    let scores: Vec<f64> = state_vecs.iter().map(|s| dominant_logit(actor, s)).collect();
 
     let tree = build_tree(&state_vecs, &scores, 0, max_depth);
     format!("Thresholds are shown in normalized feature space.\n{}", tree.to_text(feature_names, 0))

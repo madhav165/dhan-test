@@ -15,19 +15,33 @@ export type RLConfig = {
 	security_id: string
 	exchange_segment: string
 	trading_symbol: string
+	interval: string
 	train_from: string
 	train_to: string
 	test_from?: string
 	test_to?: string
 	training_method: 'ppo' | 'reinforce'
 	lr: number
+	actor_lr: number
+	critic_lr: number
 	hidden_size: number
+	num_layers: number
+	activation: 'relu' | 'tanh'
 	ppo_epochs: number
 	clip_epsilon: number
 	value_coef: number
 	entropy_coef: number
 	gae_lambda: number
 	batch_episodes: number
+	reward_norm: boolean
+	lr_schedule: boolean
+	entropy_anneal: boolean
+	regularization_type: 'none' | 'l1' | 'l2'
+	regularization_lambda: number
+	continuous_action: boolean
+	action_std: number
+	action_penalty: number
+	position_deadband: number
 }
 
 export type FeatureImportance = {

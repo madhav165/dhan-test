@@ -1,11 +1,28 @@
 use ndarray::{Array1, Array2};
 
 pub struct Candles {
+    pub timestamps: Vec<i64>,
     pub opens: Vec<f64>,
     pub highs: Vec<f64>,
     pub lows: Vec<f64>,
     pub closes: Vec<f64>,
     pub volumes: Vec<f64>,
+}
+
+pub fn compute_day_boundaries(timestamps: &[i64]) -> Vec<bool> {
+    let mut boundaries = vec![false; timestamps.len()];
+    for i in 1..timestamps.len() {
+        let prev_day = timestamps[i - 1] / 86400;
+        let curr_day = timestamps[i] / 86400;
+        if prev_day != curr_day {
+            boundaries[i - 1] = true;
+        }
+    }
+    let len = boundaries.len();
+    if len > 0 {
+        boundaries[len - 1] = true;
+    }
+    boundaries
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -82,6 +99,111 @@ pub fn compute_indicators(candles: &Candles, specs: &[IndicatorSpec]) -> Vec<(St
     out
 }
 
+/// Apply stationary transformations to raw indicator series.
+/// This makes features regime-independent and bounded, which is critical for RL.
+pub fn stationary_transform(
+    candles: &Candles,
+    raw_indicators: &[(String, Vec<f64>)],
+) -> Vec<(String, Vec<f64>)> {
+    use std::collections::HashMap;
+
+    let n = candles.closes.len();
+    let mut result = vec![];
+
+    // Group BB components by period so we can compute %B and bandwidth
+    let mut bb_groups: HashMap<usize, (Vec<f64>, Vec<f64>, Vec<f64>)> = HashMap::new();
+
+    for (name, values) in raw_indicators {
+        if name.starts_with("ema_") {
+            // EMA distance from price: (Close - EMA) / EMA
+            // This is naturally stationary (percentage) and zero-centered when price = EMA
+            let dist: Vec<f64> = candles
+                .closes
+                .iter()
+                .zip(values.iter())
+                .map(|(c, ema)| (c - ema) / ema.max(1e-8))
+                .collect();
+            result.push((format!("{}_dist", name), dist));
+        } else if name.starts_with("rsi_") {
+            // RSI centered to [-1, 1]: (RSI - 50) / 50
+            // RSI is already bounded [0, 100]; this makes it zero-centered for the MLP
+            let centered: Vec<f64> = values.iter().map(|v| (v - 50.0) / 50.0).collect();
+            result.push((format!("{}_centered", name), centered));
+        } else if name.starts_with("bb_") {
+            // Parse bb_{period}_{component} (e.g., bb_20_upper)
+            let parts: Vec<&str> = name.split('_').collect();
+            if parts.len() >= 3 {
+                if let Ok(period) = parts[1].parse::<usize>() {
+                    let component = parts[2];
+                    let entry = bb_groups.entry(period).or_insert_with(|| {
+                        (vec![f64::NAN; n], vec![f64::NAN; n], vec![f64::NAN; n])
+                    });
+                    match component {
+                        "upper" => entry.0 = values.clone(),
+                        "middle" => entry.1 = values.clone(),
+                        "lower" => entry.2 = values.clone(),
+                        _ => {}
+                    }
+                }
+            }
+        } else if name == "obv" {
+            // OBV delta normalized by rolling standard deviation
+            // Raw OBV is cumulative and non-stationary; delta captures flow direction
+            let window = 20usize;
+            let mut deltas = vec![0.0; n];
+            for i in 1..n {
+                deltas[i] = values[i] - values[i - 1];
+            }
+            let mut normalized = vec![f64::NAN; n];
+            for i in window..n {
+                let win = &deltas[i - window + 1..=i];
+                let mean = win.iter().sum::<f64>() / window as f64;
+                let std = (win.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / window as f64)
+                    .sqrt()
+                    .max(1e-8);
+                normalized[i] = (deltas[i] - mean) / std;
+            }
+            result.push(("obv_delta_norm".into(), normalized));
+        } else {
+            // Pass through any other indicators unchanged (backward compatibility)
+            result.push((name.clone(), values.clone()));
+        }
+    }
+
+    // Process grouped BB components into %B and bandwidth
+    for (period, (upper, middle, lower)) in bb_groups {
+        // Bandwidth: (Upper - Lower) / Middle
+        // Detects volatility squeezes; stationary because it's a ratio
+        let bandwidth: Vec<f64> = upper
+            .iter()
+            .zip(middle.iter())
+            .zip(lower.iter())
+            .map(|((u, m), l)| (u - l) / m.max(1e-8))
+            .collect();
+        result.push((format!("bb_{}_bandwidth", period), bandwidth));
+
+        // %B: (Close - Lower) / (Upper - Lower)
+        // Where is price within the bands? 0.0 = lower, 1.0 = upper, 0.5 = middle
+        let percent_b: Vec<f64> = candles
+            .closes
+            .iter()
+            .zip(upper.iter())
+            .zip(lower.iter())
+            .map(|((c, u), l)| {
+                let range = u - l;
+                if range < 1e-8 {
+                    0.5
+                } else {
+                    (c - l) / range
+                }
+            })
+            .collect();
+        result.push((format!("bb_{}_percent_b", period), percent_b));
+    }
+
+    result
+}
+
 pub fn build_state_matrix_with_indices(
     candles: &Candles,
     indicator_series: &[(String, Vec<f64>)],
@@ -95,7 +217,7 @@ pub fn build_state_matrix_with_indices(
     let mut feature_names: Vec<String> = indicator_series.iter().map(|(n, _)| n.clone()).collect();
     for lag in 1..=lookback {
         for col in ["open", "high", "low", "close", "volume"] {
-            feature_names.push(format!("{}_t-{}", col, lag));
+            feature_names.push(format!("{}_ret_t-{}", col, lag));
         }
     }
 
@@ -111,13 +233,15 @@ pub fn build_state_matrix_with_indices(
             state[j] = v;
         }
         let mut off = ind_count;
+        let current_close = candles.closes[i].max(1e-8);
+        let current_vol = candles.volumes[i].max(1e-8);
         for lag in 1..=lookback {
             let t = i - lag;
-            state[off] = candles.opens[t];   off += 1;
-            state[off] = candles.highs[t];   off += 1;
-            state[off] = candles.lows[t];    off += 1;
-            state[off] = candles.closes[t];  off += 1;
-            state[off] = candles.volumes[t]; off += 1;
+            state[off] = (candles.opens[t] - current_close) / current_close;   off += 1;
+            state[off] = (candles.highs[t] - current_close) / current_close;   off += 1;
+            state[off] = (candles.lows[t] - current_close) / current_close;    off += 1;
+            state[off] = (candles.closes[t] - current_close) / current_close;  off += 1;
+            state[off] = (candles.volumes[t] - current_vol) / current_vol;     off += 1;
         }
         rows.push(state);
         candle_indices.push(i);

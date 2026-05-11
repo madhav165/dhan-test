@@ -1,7 +1,7 @@
 mod rl;
-use rl::features::{Candles, IndicatorSpec, compute_indicators, build_state_matrix_with_indices, normalise_with_stats, apply_normalisation_stats};
+use rl::features::{Candles, IndicatorSpec, compute_indicators, stationary_transform, build_state_matrix_with_indices, normalise_with_stats, apply_normalisation_stats};
 use rl::train::{TrainConfig, train_reinforce, train_ppo, weights_to_bytes, split_points, collect_greedy_states};
-use rl::distill::{feature_importance, normalise_importance, distil, net_to_rust};
+use rl::distill::{feature_importance, normalise_importance, distil, net_to_rust, codegen_transforms};
 
 use std::env;
 use std::fs;
@@ -14,7 +14,7 @@ use tokio_postgres::NoTls;
 use aws_sdk_s3::{Client as S3Client, config::Builder as S3Builder, config::BehaviorVersion};
 use aws_credential_types::Credentials;
 use aws_config::Region;
-use arrow::array::{Float64Array, Int64Array, StringArray, UInt8Array};
+use arrow::array::{Float64Array, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
@@ -39,7 +39,7 @@ struct State {
     volumes: Vec<f64>,
     highs: Vec<f64>,
     lows: Vec<f64>,
-    signals: Vec<u8>,
+    signals: Vec<f64>,
 }
 struct WasmState(UnsafeCell<State>);
 unsafe impl Sync for WasmState {}
@@ -89,53 +89,69 @@ pub extern "C" fn alloc_low(len: u32) -> *mut f64 {
 }
 
 #[no_mangle]
-pub extern "C" fn run(len: u32) -> *mut u8 {
+pub extern "C" fn run(len: u32) -> *mut f64 {
     let s = unsafe { &mut *STATE.0.get() };
     let n = len as usize;
-    s.signals = vec![0u8; n];
+    s.signals = vec![0.0; n];
     if n < 2 { return s.signals.as_mut_ptr(); }
     let prices = &s.prices[..n];
     let opens = &s.opens[..s.opens.len().min(n)];
     let volumes = &s.volumes[..s.volumes.len().min(n)];
     let highs = &s.highs[..s.highs.len().min(n)];
     let lows = &s.lows[..s.lows.len().min(n)];
-    let mut position: i8 = 0;
+    let mut position: f64 = 0.0;
     let mut entry_price = 0.0_f64;
     let mut holding = 0_usize;
-    let mut prev_sig = 0u8;
+    let mut prev_target: f64 = 0.0;
+    const POSITION_DEADBAND: f64 = 0.05;
     for i in 1..n {
         let price = prices[i];
-        let unrealized_pnl = match position {
-            1 => price - entry_price,
-            -1 => entry_price - price,
-            _ => 0.0,
+        let unrealized_pnl = if position > 0.0 {
+            position * (price - entry_price)
+        } else if position < 0.0 {
+            position.abs() * (entry_price - price)
+        } else {
+            0.0
         };
-        let norm_position = position as f64 * 0.5;
+        let norm_position = position;
         let norm_holding = (holding as f64 / 20.0).clamp(-5.0, 5.0);
         let norm_unrealized = (unrealized_pnl / entry_price.max(1e-8)).clamp(-5.0, 5.0);
-        let raw_sig = signal(prices, opens, volumes, highs, lows, i, norm_position, norm_holding, norm_unrealized);
-        let sig = if raw_sig == 255 { prev_sig } else { raw_sig as u8 };
-        s.signals[i] = sig;
-        match (position, sig) {
-            (0, 1) => { position = 1; entry_price = price; holding = 0; }
-            (0, 2) => { position = -1; entry_price = price; holding = 0; }
-            (1, 0) | (1, 2) => {
-                position = 0; holding = 0;
-                if sig == 2 { position = -1; entry_price = price; }
+        let target = signal(prices, opens, volumes, highs, lows, i, norm_position, norm_holding, norm_unrealized);
+        let target = if target.is_nan() { prev_target } else { target.clamp(-1.0, 1.0) };
+        let target = if (target - position).abs() < POSITION_DEADBAND { position } else { target };
+        s.signals[i] = target;
+
+        if target != position {
+            if position > 0.0 && target < position {
+                let closed = position - target.max(0.0);
+                let _ = closed * (price - entry_price);
+            } else if position < 0.0 && target > position {
+                let closed = position.abs() - target.min(0.0).abs();
+                let _ = closed * (entry_price - price);
             }
-            (-1, 0) | (-1, 1) => {
-                position = 0; holding = 0;
-                if sig == 1 { position = 1; entry_price = price; }
+            if target == 0.0 {
+                entry_price = 0.0;
+            } else if position == 0.0 {
+                entry_price = price;
+            } else if position.signum() != target.signum() {
+                entry_price = price;
+            } else {
+                let same_dir = if position > 0.0 { position.min(target) } else { position.max(target) };
+                let added = (target - position).abs();
+                let new_size = target.abs();
+                if new_size > 0.0 {
+                    entry_price = (entry_price * same_dir.abs() + price * added) / new_size;
+                }
             }
-            _ => {}
         }
-        if position != 0 { holding += 1; }
-        prev_sig = sig;
+        position = target;
+        holding = if position != 0.0 { holding + 1 } else { 0 };
+        prev_target = target;
     }
     s.signals.as_mut_ptr()
 }
 
-fn signal(prices: &[f64], opens: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64], i: usize, norm_position: f64, norm_holding: f64, norm_unrealized: f64) -> u8 {
+fn signal(prices: &[f64], opens: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64], i: usize, norm_position: f64, norm_holding: f64, norm_unrealized: f64) -> f64 {
     // USER CODE
 }
 "#;
@@ -183,7 +199,7 @@ async fn download(s3: &S3Client, bucket: &str, key: &str) -> Result<Vec<u8>, Str
     Ok(bytes.to_vec())
 }
 
-fn run_wasm(wasm: &[u8], closes: &[f64], opens: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64]) -> Result<Vec<u8>, String> {
+fn run_wasm(wasm: &[u8], closes: &[f64], opens: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64]) -> Result<Vec<f64>, String> {
     use wasmtime::{Engine, Linker, Module, Store};
 
     let engine = Engine::default();
@@ -222,9 +238,17 @@ fn run_wasm(wasm: &[u8], closes: &[f64], opens: &[f64], volumes: &[f64], highs: 
 
     let sig_ptr = run_fn.call(&mut store, len).map_err(|e| e.to_string())?;
 
-    let signals = {
+    let signals: Vec<f64> = {
         let data = memory.data(&store);
-        data[sig_ptr as usize..sig_ptr as usize + len as usize].to_vec()
+        (0..len as usize)
+            .map(|i| {
+                let off = sig_ptr as usize + i * 8;
+                f64::from_le_bytes([
+                    data[off], data[off + 1], data[off + 2], data[off + 3],
+                    data[off + 4], data[off + 5], data[off + 6], data[off + 7],
+                ])
+            })
+            .collect()
     };
 
     Ok(signals)
@@ -250,30 +274,32 @@ struct BrokerCharges {
 }
 
 impl BrokerCharges {
-    fn cost(&self, buy_price: f64, sell_price: f64) -> f64 {
-        let brokerage = (self.brokerage_pct * buy_price).min(self.brokerage_flat)
-            + (self.brokerage_pct * sell_price).min(self.brokerage_flat);
-        let stt = self.stt_buy_pct * buy_price + self.stt_sell_pct * sell_price;
-        let exchange = self.exchange_pct * (buy_price + sell_price);
-        let sebi = self.sebi_pct * (buy_price + sell_price);
-        let stamp = self.stamp_buy_pct * buy_price;
+    fn cost(&self, buy_price: f64, sell_price: f64, size: f64) -> f64 {
+        let trade_value_buy = buy_price * size;
+        let trade_value_sell = sell_price * size;
+        let brokerage = (self.brokerage_pct * trade_value_buy).min(self.brokerage_flat)
+            + (self.brokerage_pct * trade_value_sell).min(self.brokerage_flat);
+        let stt = self.stt_buy_pct * trade_value_buy + self.stt_sell_pct * trade_value_sell;
+        let exchange = self.exchange_pct * (trade_value_buy + trade_value_sell);
+        let sebi = self.sebi_pct * (trade_value_buy + trade_value_sell);
+        let stamp = self.stamp_buy_pct * trade_value_buy;
         let gst = self.gst_pct * (brokerage + exchange + sebi);
         brokerage + stt + exchange + sebi + stamp + gst
     }
 }
 
-fn compute_metrics(closes: &[f64], signals: &[u8], charges: &BrokerCharges) -> Metrics {
+fn compute_metrics(closes: &[f64], signals: &[f64], timestamps: &[i64], interval: &str, charges: &BrokerCharges) -> Metrics {
     let mut num_trades = 0i32;
     let mut wins = 0i32;
     let mut total_pnl = 0.0f64;
-    // (entry_price, is_long)
-    let mut entry: Option<(f64, bool)> = None;
+    let mut entry_price = 0.0f64;
+    let mut position: f64 = 0.0;
     let mut cum_pnl = 0.0f64;
     let mut peak = 0.0f64;
     let mut max_drawdown = 0.0f64;
 
-    let mut record = |gross_pnl: f64, buy_price: f64, sell_price: f64| {
-        let cost = charges.cost(buy_price, sell_price);
+    let mut record = |gross_pnl: f64, buy_price: f64, sell_price: f64, size: f64| {
+        let cost = charges.cost(buy_price, sell_price, size);
         let pnl = gross_pnl - cost;
         total_pnl += pnl;
         num_trades += 1;
@@ -284,35 +310,91 @@ fn compute_metrics(closes: &[f64], signals: &[u8], charges: &BrokerCharges) -> M
         if dd > max_drawdown { max_drawdown = dd; }
     };
 
-    let mut prev_sig = 0u8;
-    for (i, &sig) in signals.iter().enumerate() {
-        if sig == prev_sig { prev_sig = sig; continue; }
-        // close existing position on any transition away from it
-        if let Some((e, prev_long)) = entry.take() {
-            if sig == 0 || (sig == 2 && prev_long) || (sig == 1 && !prev_long) {
-                let (gross, buy_p, sell_p) = if prev_long {
-                    (closes[i] - e, e, closes[i])
+    let is_day_interval = interval == "day";
+    const POSITION_DEADBAND: f64 = 0.05;
+    for (i, &target) in signals.iter().enumerate() {
+        let target = target.clamp(-1.0, 1.0);
+        let delta = (target - position).abs();
+        if delta < POSITION_DEADBAND {
+            // Even if no trade, check EOD for intraday
+            if !is_day_interval && position != 0.0 {
+                let is_eod = if i + 1 < signals.len() {
+                    let prev_day = timestamps[i] / 86400;
+                    let next_day = timestamps[i + 1] / 86400;
+                    prev_day != next_day
                 } else {
-                    (e - closes[i], closes[i], e)
+                    true
                 };
-                record(gross, buy_p, sell_p);
+                if is_eod {
+                    if position > 0.0 {
+                        record(position * (closes[i] - entry_price), entry_price, closes[i], position);
+                    } else {
+                        record(position.abs() * (entry_price - closes[i]), closes[i], entry_price, position.abs());
+                    }
+                    position = 0.0;
+                    entry_price = 0.0;
+                }
+            }
+            continue;
+        }
+
+        if target != position {
+            if position > 0.0 && target < position {
+                let closed = position - target.max(0.0);
+                record(closed * (closes[i] - entry_price), entry_price, closes[i], closed);
+            } else if position < 0.0 && target > position {
+                let closed = position.abs() - target.min(0.0).abs();
+                record(closed * (entry_price - closes[i]), closes[i], entry_price, closed);
+            }
+            if target == 0.0 {
+                entry_price = 0.0;
+            } else if position == 0.0 {
+                entry_price = closes[i];
+            } else if position.signum() != target.signum() {
+                entry_price = closes[i];
+            } else {
+                // Same direction: only update entry_price when adding to position
+                if target.abs() > position.abs() {
+                    let same_dir = if position > 0.0 { position.min(target) } else { position.max(target) };
+                    let added = (target - position).abs();
+                    let new_size = target.abs();
+                    if new_size > 0.0 {
+                        entry_price = (entry_price * same_dir.abs() + closes[i] * added) / new_size;
+                    }
+                }
+                // If reducing, entry_price stays the same for remaining shares
             }
         }
-        // open new position on buy or sell signal
-        if sig == 1 || sig == 2 {
-            entry = Some((closes[i], sig == 1));
+        position = target;
+
+        // EOD close for intraday: force-close at last candle of each trading day
+        if !is_day_interval && position != 0.0 {
+            let is_eod = if i + 1 < signals.len() {
+                let prev_day = timestamps[i] / 86400;
+                let next_day = timestamps[i + 1] / 86400;
+                prev_day != next_day
+            } else {
+                true
+            };
+            if is_eod {
+                if position > 0.0 {
+                    record(position * (closes[i] - entry_price), entry_price, closes[i], position);
+                } else {
+                    record(position.abs() * (entry_price - closes[i]), closes[i], entry_price, position.abs());
+                }
+                position = 0.0;
+                entry_price = 0.0;
+            }
         }
-        prev_sig = sig;
     }
 
-    if let Some((e, is_long)) = entry {
+    if position != 0.0 {
         if let Some(&last) = closes.last() {
-            let (gross, buy_p, sell_p) = if is_long {
-                (last - e, e, last)
+            if position > 0.0 {
+                record(position * (last - entry_price), entry_price, last, position);
             } else {
-                (e - last, last, e)
-            };
-            record(gross, buy_p, sell_p);
+                record(position.abs() * (entry_price - last), last, entry_price, position.abs());
+            }
         }
     }
 
@@ -329,7 +411,7 @@ fn build_parquet(
     lows: &[f64],
     closes: &[f64],
     volumes: &[i64],
-    signals: &[u8],
+    signals: &[f64],
 ) -> Result<Vec<u8>, String> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("security_id", DataType::Utf8, false),
@@ -340,7 +422,7 @@ fn build_parquet(
         Field::new("low", DataType::Float64, false),
         Field::new("close", DataType::Float64, false),
         Field::new("volume", DataType::Int64, false),
-        Field::new("signal", DataType::UInt8, false),
+        Field::new("signal", DataType::Float64, false),
     ]));
 
     let batch = RecordBatch::try_new(schema.clone(), vec![
@@ -352,7 +434,7 @@ fn build_parquet(
         Arc::new(Float64Array::from(lows.to_vec())),
         Arc::new(Float64Array::from(closes.to_vec())),
         Arc::new(Int64Array::from(volumes.to_vec())),
-        Arc::new(UInt8Array::from(signals.to_vec())),
+        Arc::new(Float64Array::from(signals.to_vec())),
     ]).map_err(|e| e.to_string())?;
 
     let mut buf = Vec::new();
@@ -514,7 +596,7 @@ async fn process_run_job(
         lows: Vec<f64>,
         closes: Vec<f64>,
         volumes: Vec<i64>,
-        signals: Vec<u8>,
+        signals: Vec<f64>,
         metrics: Metrics,
     }
 
@@ -525,7 +607,7 @@ async fn process_run_job(
             let all_signals = run_wasm(&wasm, &ic.closes, &ic.opens, &volumes_f64, &ic.highs, &ic.lows)?;
             let extra = ic.extra_count;
             let signals = all_signals[extra..].to_vec();
-            let metrics = compute_metrics(&ic.closes[extra..], &signals, &charges.clone());
+            let metrics = compute_metrics(&ic.closes[extra..], &signals, &ic.timestamps[extra..], &interval, &charges.clone());
             Ok(InstResult {
                 security_id: ic.security_id,
                 exchange_segment: ic.exchange_segment,
@@ -552,7 +634,7 @@ async fn process_run_job(
     let mut col_low: Vec<f64> = vec![];
     let mut col_close: Vec<f64> = vec![];
     let mut col_vol: Vec<i64> = vec![];
-    let mut col_sig: Vec<u8> = vec![];
+    let mut col_sig: Vec<f64> = vec![];
     let mut total_trades = 0i32;
     let mut total_wins = 0i32;
     let mut total_pnl = 0.0f64;
@@ -568,7 +650,7 @@ async fn process_run_job(
 
         let key = format!("{}:{}", r.security_id, r.exchange_segment);
         let entries: Vec<serde_json::Value> = r.timestamps.iter().zip(r.signals.iter())
-            .filter(|(_, &sig)| sig != 0)
+            .filter(|(_, &sig)| sig != 0.0)
             .map(|(&ts, &sig)| serde_json::json!({"ts": ts, "sig": sig}))
             .collect();
         if !entries.is_empty() {
@@ -724,11 +806,12 @@ async fn process_rl_job(
     ).await.map_err(|e| e.to_string())?;
 
     let row = db.query_one(
-        "select rl_config from strategies where id=$1",
+        "select interval, rl_config from strategies where id=$1",
         &[&strategy_id],
     ).await.map_err(|e| e.to_string())?;
 
-    let rl_config: serde_json::Value = row.get(0);
+    let strategy_interval: String = row.get(0);
+    let rl_config: serde_json::Value = row.get(1);
 
     let train_from: String = rl_config["train_from"].as_str().unwrap_or("").to_string();
     let train_to: String = rl_config["train_to"].as_str().unwrap_or("").to_string();
@@ -739,6 +822,8 @@ async fn process_rl_job(
     let reward_type = rl_config["reward"].as_str().unwrap_or("pnl").to_string();
     let training_method = rl_config["training_method"].as_str().unwrap_or("ppo").to_string();
     let lr = rl_config["lr"].as_f64().unwrap_or(1e-4);
+    let actor_lr = rl_config["actor_lr"].as_f64().unwrap_or(lr);
+    let critic_lr = rl_config["critic_lr"].as_f64().unwrap_or(actor_lr * 10.0);
     let ppo_epochs = rl_config["ppo_epochs"].as_u64().unwrap_or(4) as usize;
     let clip_epsilon = rl_config["clip_epsilon"].as_f64().unwrap_or(0.2);
     let value_coef = rl_config["value_coef"].as_f64().unwrap_or(0.5);
@@ -746,6 +831,17 @@ async fn process_rl_job(
     let gae_lambda = rl_config["gae_lambda"].as_f64().unwrap_or(0.95);
     let batch_episodes = rl_config["batch_episodes"].as_u64().unwrap_or(8) as usize;
     let hidden_size = rl_config["hidden_size"].as_u64().unwrap_or(64) as usize;
+    let num_layers = rl_config["num_layers"].as_u64().unwrap_or(2) as usize;
+    let activation = rl_config["activation"].as_str().unwrap_or("relu").to_string();
+    let reward_norm = rl_config["reward_norm"].as_bool().unwrap_or(true);
+    let lr_schedule = rl_config["lr_schedule"].as_bool().unwrap_or(true);
+    let entropy_anneal = rl_config["entropy_anneal"].as_bool().unwrap_or(true);
+    let regularization_type = rl_config["regularization_type"].as_str().unwrap_or("none").to_string();
+    let regularization_lambda = rl_config["regularization_lambda"].as_f64().unwrap_or(0.0);
+    let continuous_action = rl_config["continuous_action"].as_bool().unwrap_or(false);
+    let action_std = rl_config["action_std"].as_f64().unwrap_or(0.3);
+    let action_penalty = rl_config["action_penalty"].as_f64().unwrap_or(0.0);
+    let position_deadband = rl_config["position_deadband"].as_f64().unwrap_or(0.05);
 
     let indicator_specs: Vec<IndicatorSpec> = serde_json::from_value(
         rl_config["indicators"].clone()
@@ -780,13 +876,14 @@ async fn process_rl_job(
         .ok_or_else(|| "No exchange segment configured in RL config".to_string())?
         .to_string();
 
-    // Broker charges (daily = delivery)
+    // Broker charges: intraday for non-day intervals
+    let trade_type = if strategy_interval == "day" { "delivery" } else { "intraday" };
     let charge_row = db.query_one(
         "select brokerage_flat::float8, brokerage_pct::float8, stt_buy_pct::float8, \
                 stt_sell_pct::float8, exchange_pct::float8, sebi_pct::float8, \
                 stamp_buy_pct::float8, gst_pct::float8 \
-         from broker_charges where trade_type = 'delivery'",
-        &[],
+         from broker_charges where trade_type = $1",
+        &[&trade_type],
     ).await.map_err(|e| e.to_string())?;
     let charges = rl::train::BrokerCharges {
         brokerage_flat: charge_row.get(0),
@@ -804,20 +901,22 @@ async fn process_rl_job(
         let to = to.to_string();
         let sid = security_id.clone();
         let seg = exchange_segment.clone();
+        let iv = strategy_interval.clone();
         async move {
             db.query(
                 "select extract(epoch from timestamp)::bigint, open::float8, high::float8,
                         low::float8, close::float8, volume
                  from candles
-                 where security_id=$1 and exchange_segment=$2 and interval='day'
-                 and timestamp::date between $3::text::date and $4::text::date
+                 where security_id=$1 and exchange_segment=$2 and interval=$3
+                 and timestamp::date between $4::text::date and $5::text::date
                  order by timestamp",
-                &[&sid, &seg, &from, &to],
+                &[&sid, &seg, &iv, &from, &to],
             ).await.map_err(|e: tokio_postgres::Error| e.to_string())
         }
     };
 
     let to_candles = |rows: Vec<tokio_postgres::Row>| Candles {
+        timestamps: rows.iter().map(|r| r.get::<_, i64>(0)).collect(),
         opens:   rows.iter().map(|r| r.get::<_, f64>(1)).collect(),
         highs:   rows.iter().map(|r| r.get::<_, f64>(2)).collect(),
         lows:    rows.iter().map(|r| r.get::<_, f64>(3)).collect(),
@@ -837,7 +936,8 @@ async fn process_rl_job(
     let train_epochs: Vec<i64> = train_rows.iter().map(|r| r.get::<_, i64>(0)).collect();
     let train_candles = to_candles(train_rows);
 
-    let indicator_series = compute_indicators(&train_candles, &indicator_specs);
+    let raw_indicator_series = compute_indicators(&train_candles, &indicator_specs);
+    let indicator_series = stationary_transform(&train_candles, &raw_indicator_series);
     let (raw_states, mut feature_names, candle_indices) = build_state_matrix_with_indices(&train_candles, &indicator_series, lookback);
     if raw_states.nrows() == 0 {
         return Err(format!("Not enough usable candles after indicator warmup for {} {} in {} to {}", security_id, exchange_segment, train_from, train_to));
@@ -858,9 +958,11 @@ async fn process_rl_job(
         episode_steps: states.nrows().min(200),
         validation_interval: 10,
         early_stopping_patience: 100,
-        min_delta: 1e-6,
+        min_delta: 1e-3,
         grad_clip_norm: 1.0,
         lr,
+        actor_lr,
+        critic_lr,
         gamma: 0.99,
         allow_short,
         reward_type,
@@ -868,7 +970,6 @@ async fn process_rl_job(
         max_holding_days,
         penalty_trades_per_month: penalty_trades,
         max_trades_per_month,
-        training_method: training_method.clone(),
         ppo_epochs,
         clip_epsilon,
         value_coef,
@@ -876,12 +977,27 @@ async fn process_rl_job(
         gae_lambda,
         batch_episodes,
         hidden_size,
+        num_layers,
+        activation,
+        reward_norm,
+        lr_schedule,
+        entropy_anneal,
+        regularization_type,
+        regularization_lambda,
+        continuous_action,
+        action_std,
+        action_std_schedule: true,
+        action_penalty,
+        position_deadband,
+        minibatch_size: 64,
     };
 
+    let day_boundaries = rl::features::compute_day_boundaries(&train_candles.timestamps);
+    let is_day_interval = strategy_interval == "day";
     let result = if training_method == "reinforce" {
-        train_reinforce(&states, &train_candles.closes, &candle_indices, &cfg, &charges)
+        train_reinforce(&states, &train_candles.closes, &candle_indices, &day_boundaries, is_day_interval, &cfg, &charges)
     } else {
-        train_ppo(&states, &train_candles.closes, &candle_indices, &cfg, &charges)
+        train_ppo(&states, &train_candles.closes, &candle_indices, &day_boundaries, is_day_interval, &cfg, &charges)
     };
     let external_test_pnl: Option<f64> = if let (Some(ref tf), Some(ref tt)) = (&external_test_from, &external_test_to) {
         let test_rows = fetch_candles(tf, tt).await?;
@@ -889,41 +1005,44 @@ async fn process_rl_job(
             None
         } else {
             let test_candles = to_candles(test_rows);
-            let test_ind = compute_indicators(&test_candles, &indicator_specs);
+            let raw_test_ind = compute_indicators(&test_candles, &indicator_specs);
+            let test_ind = stationary_transform(&test_candles, &raw_test_ind);
             let (mut test_states, _, test_indices) = build_state_matrix_with_indices(&test_candles, &test_ind, lookback);
             apply_normalisation_stats(&mut test_states, &means, &stds)?;
             if test_states.nrows() == 0 {
                 None
             } else {
-                Some(rl::train::evaluate(&result.net, &test_states, &test_candles.closes, &test_indices, allow_short, &charges))
+                let test_day_boundaries = rl::features::compute_day_boundaries(&test_candles.timestamps);
+                Some(rl::train::evaluate(&result.actor, &test_states, &test_candles.closes, &test_indices, &test_day_boundaries, is_day_interval, allow_short, &charges, position_deadband))
             }
         }
     } else {
         None
     };
 
-    let weights = weights_to_bytes(&result.net)?;
+    let weights = weights_to_bytes(&result.actor)?;
     let weights_key = format!("strategies/{}/weights.bin", strategy_id);
     upload(s3, bucket, &weights_key, weights).await?;
 
     let train_states_for_explain = collect_greedy_states(
-        &result.net,
+        &result.actor,
         &states.slice(ndarray::s![..train_end, ..]).to_owned(),
         &train_candles.closes,
         &candle_indices[..train_end],
         allow_short,
     );
-    let raw_imp = feature_importance(&result.net, &train_states_for_explain);
+    let raw_imp = feature_importance(&result.actor, &train_states_for_explain);
     let norm_imp = normalise_importance(&raw_imp);
     let feature_importance_json: Vec<serde_json::Value> = feature_names.iter()
         .zip(norm_imp.iter())
         .map(|(name, &imp)| serde_json::json!({ "name": name, "importance": imp }))
         .collect();
 
-    let approx_rules = distil(&result.net, &train_states_for_explain, &feature_names, 3);
+    let approx_rules = distil(&result.actor, &train_states_for_explain, &feature_names, 3);
 
+    let feature_codegen = codegen_transforms(&indicator_specs);
     let rust_snippet = net_to_rust(
-        &result.net, &indicator_specs, lookback, &means, &stds, allow_short,
+        &result.actor, &feature_codegen, lookback, &means, &stds, allow_short,
     );
     let split_date = |state_row: usize| -> String {
         candle_indices.get(state_row)

@@ -30,9 +30,9 @@ export const actions: Actions = {
 		}
 
 		const stratResult = await db.query(
-			`insert into strategies (user_id, name, strategy_type, rl_config)
-			 values ($1, $2, 'rl', $3) returning id`,
-			[locals.user!.id, name, rl_config]
+			`insert into strategies (user_id, name, strategy_type, interval, rl_config)
+			 values ($1, $2, 'rl', $3, $4) returning id`,
+			[locals.user!.id, name, rl_config.interval, rl_config]
 		)
 		const strategyId = stratResult.rows[0].id
 
