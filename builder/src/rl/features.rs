@@ -1,11 +1,28 @@
 use ndarray::{Array1, Array2};
 
 pub struct Candles {
+    pub timestamps: Vec<i64>,
     pub opens: Vec<f64>,
     pub highs: Vec<f64>,
     pub lows: Vec<f64>,
     pub closes: Vec<f64>,
     pub volumes: Vec<f64>,
+}
+
+pub fn compute_day_boundaries(timestamps: &[i64]) -> Vec<bool> {
+    let mut boundaries = vec![false; timestamps.len()];
+    for i in 1..timestamps.len() {
+        let prev_day = timestamps[i - 1] / 86400;
+        let curr_day = timestamps[i] / 86400;
+        if prev_day != curr_day {
+            boundaries[i - 1] = true;
+        }
+    }
+    let len = boundaries.len();
+    if len > 0 {
+        boundaries[len - 1] = true;
+    }
+    boundaries
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]

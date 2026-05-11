@@ -807,6 +807,8 @@ fn greedy_objective(
     states: &Array2<f64>,
     closes: &[f64],
     candle_indices: &[usize],
+    day_boundaries: &[bool],
+    is_day_interval: bool,
     config: &TrainConfig,
     charges: &BrokerCharges,
 ) -> f64 {
@@ -828,6 +830,29 @@ fn greedy_objective(
         let r = step_reward(action, prev_action, &mut position, &mut entry_price, &mut holding, &mut trades, price, prev_price, config, charges);
         rewards.push(r);
         prev_action = action;
+
+        // EOD close for intraday: force-close at last candle of each trading day
+        if !is_day_interval && position != 0.0 {
+            let is_eod = if t + 1 < n {
+                day_boundaries[candle_indices[t]]
+            } else {
+                true
+            };
+            if is_eod {
+                let close_cost = if position > 0.0 {
+                    charges.cost(entry_price, price, position)
+                } else {
+                    charges.cost(price, entry_price, position.abs())
+                };
+                if let Some(last_reward) = rewards.last_mut() {
+                    *last_reward -= close_cost;
+                }
+                position = 0.0;
+                entry_price = 0.0;
+                holding = 0;
+                prev_action = 0.0;
+            }
+        }
     }
 
     match config.reward_type.as_str() {
@@ -915,6 +940,8 @@ fn rollout(
     states: &Array2<f64>,
     closes: &[f64],
     candle_indices: &[usize],
+    day_boundaries: &[bool],
+    is_day_interval: bool,
     config: &TrainConfig,
     charges: &BrokerCharges,
     rng: &mut impl Rng,
@@ -944,6 +971,29 @@ fn rollout(
         steps.push(Step { state, action, ret: 0.0 });
         rewards.push(r);
         prev_action = action;
+
+        // EOD close for intraday: force-close at last candle of each trading day
+        if !is_day_interval && position != 0.0 {
+            let is_eod = if t + 1 < n {
+                day_boundaries[candle_indices[row_idx]]
+            } else {
+                true
+            };
+            if is_eod {
+                let close_cost = if position > 0.0 {
+                    charges.cost(entry_price, price, position)
+                } else {
+                    charges.cost(price, entry_price, position.abs())
+                };
+                if let Some(last_reward) = rewards.last_mut() {
+                    *last_reward -= close_cost;
+                }
+                position = 0.0;
+                entry_price = 0.0;
+                holding = 0;
+                prev_action = 0.0;
+            }
+        }
     }
 
     // End-of-episode fee evasion fix: force-close any open position and subtract costs
@@ -1033,6 +1083,8 @@ fn rollout_ppo(
     states: &Array2<f64>,
     closes: &[f64],
     candle_indices: &[usize],
+    day_boundaries: &[bool],
+    is_day_interval: bool,
     config: &TrainConfig,
     charges: &BrokerCharges,
     rng: &mut impl Rng,
@@ -1063,6 +1115,32 @@ fn rollout_ppo(
         steps.push(TrajectoryStep { state, action, log_prob, value, reward: r });
         rewards.push(r);
         prev_action = action;
+
+        // EOD close for intraday: force-close at last candle of each trading day
+        if !is_day_interval && position != 0.0 {
+            let is_eod = if t + 1 < n {
+                day_boundaries[candle_indices[row_idx]]
+            } else {
+                true
+            };
+            if is_eod {
+                let close_cost = if position > 0.0 {
+                    charges.cost(entry_price, price, position)
+                } else {
+                    charges.cost(price, entry_price, position.abs())
+                };
+                if let Some(last_reward) = rewards.last_mut() {
+                    *last_reward -= close_cost;
+                }
+                if let Some(last_step) = steps.last_mut() {
+                    last_step.reward -= close_cost;
+                }
+                position = 0.0;
+                entry_price = 0.0;
+                holding = 0;
+                prev_action = 0.0;
+            }
+        }
     }
 
     // End-of-episode fee evasion fix: force-close any open position and subtract costs
@@ -1132,6 +1210,8 @@ pub fn train_reinforce(
     states: &Array2<f64>,
     closes: &[f64],
     candle_indices: &[usize],
+    day_boundaries: &[bool],
+    is_day_interval: bool,
     config: &TrainConfig,
     charges: &BrokerCharges,
 ) -> TrainResult {
@@ -1170,7 +1250,7 @@ pub fn train_reinforce(
         if config.continuous_action && config.action_std_schedule {
             actor.action_std = action_std_at_step(config.action_std, ep, config.max_episodes);
         }
-        let (steps, episode_return) = rollout(&actor, &train_states, closes, train_indices, config, charges, &mut rng);
+        let (steps, episode_return) = rollout(&actor, &train_states, closes, train_indices, day_boundaries, is_day_interval, config, charges, &mut rng);
         reward_ema = Some(match reward_ema {
             Some(prev) => 0.95 * prev + 0.05 * episode_return,
             None => episode_return,
@@ -1204,7 +1284,7 @@ pub fn train_reinforce(
 
         let mut val_metric_opt: Option<f64> = None;
         if val_states.nrows() > 0 && ((ep + 1) % validation_interval == 0 || ep + 1 == config.max_episodes) {
-            let val_metric = greedy_objective(&actor, &val_states, closes, val_indices, config, charges);
+            let val_metric = greedy_objective(&actor, &val_states, closes, val_indices, day_boundaries, is_day_interval, config, charges);
             val_metric_opt = Some(val_metric);
             let improvement_threshold = config.min_delta * best_val_metric.abs().max(1.0);
             if val_metric > best_val_metric + improvement_threshold {
@@ -1232,12 +1312,12 @@ pub fn train_reinforce(
         actor = best_actor;
     }
 
-    let train_pnl = evaluate(&actor, &train_states, closes, train_indices, config.allow_short, charges, config.position_deadband);
+    let train_pnl = evaluate(&actor, &train_states, closes, train_indices, day_boundaries, is_day_interval, config.allow_short, charges, config.position_deadband);
     let val_pnl = if val_states.nrows() > 0 {
-        evaluate(&actor, &val_states, closes, val_indices, config.allow_short, charges, config.position_deadband)
+        evaluate(&actor, &val_states, closes, val_indices, day_boundaries, is_day_interval, config.allow_short, charges, config.position_deadband)
     } else { 0.0 };
     let test_pnl = if test_states.nrows() > 0 {
-        evaluate(&actor, &test_states, closes, test_indices, config.allow_short, charges, config.position_deadband)
+        evaluate(&actor, &test_states, closes, test_indices, day_boundaries, is_day_interval, config.allow_short, charges, config.position_deadband)
     } else { 0.0 };
     eprintln!("rl reinforce: done. train_pnl={:.4} val_pnl={:.4} test_pnl={:.4}", train_pnl, val_pnl, test_pnl);
     TrainResult { actor, final_train_reward, train_pnl, val_pnl, test_pnl, episodes: episodes_run, best_episode, metrics }
@@ -1247,6 +1327,8 @@ pub fn train_ppo(
     states: &Array2<f64>,
     closes: &[f64],
     candle_indices: &[usize],
+    day_boundaries: &[bool],
+    is_day_interval: bool,
     config: &TrainConfig,
     charges: &BrokerCharges,
 ) -> TrainResult {
@@ -1316,7 +1398,7 @@ pub fn train_ppo(
             .into_par_iter()
             .map(|_| {
                 let mut rng = rand::rng();
-                let (traj, ep_return, bootstrap_value) = rollout_ppo(&actor, &critic, &train_states, closes, train_indices, config, charges, &mut rng);
+                let (traj, ep_return, bootstrap_value) = rollout_ppo(&actor, &critic, &train_states, closes, train_indices, day_boundaries, is_day_interval, config, charges, &mut rng);
                 let traj_rewards: Vec<f64> = traj.iter().map(|t| t.reward).collect();
                 let traj_values: Vec<f64> = traj.iter().map(|t| t.value).collect();
                 let advantages = gae(&traj_rewards, &traj_values, config.gamma, gae_lambda, bootstrap_value);
@@ -1396,7 +1478,7 @@ pub fn train_ppo(
 
         let mut val_metric_opt: Option<f64> = None;
         if val_states.nrows() > 0 && ((iteration + 1) % validation_interval == 0 || iteration + 1 == config.max_episodes) {
-            let val_metric = greedy_objective(&actor, &val_states, closes, val_indices, config, charges);
+            let val_metric = greedy_objective(&actor, &val_states, closes, val_indices, day_boundaries, is_day_interval, config, charges);
             val_metric_opt = Some(val_metric);
             let improvement_threshold = config.min_delta * best_val_metric.abs().max(1.0);
             if val_metric > best_val_metric + improvement_threshold {
@@ -1424,12 +1506,12 @@ pub fn train_ppo(
         actor = best_actor;
     }
 
-    let train_pnl = evaluate(&actor, &train_states, closes, train_indices, config.allow_short, charges, config.position_deadband);
+    let train_pnl = evaluate(&actor, &train_states, closes, train_indices, day_boundaries, is_day_interval, config.allow_short, charges, config.position_deadband);
     let val_pnl = if val_states.nrows() > 0 {
-        evaluate(&actor, &val_states, closes, val_indices, config.allow_short, charges, config.position_deadband)
+        evaluate(&actor, &val_states, closes, val_indices, day_boundaries, is_day_interval, config.allow_short, charges, config.position_deadband)
     } else { 0.0 };
     let test_pnl = if test_states.nrows() > 0 {
-        evaluate(&actor, &test_states, closes, test_indices, config.allow_short, charges, config.position_deadband)
+        evaluate(&actor, &test_states, closes, test_indices, day_boundaries, is_day_interval, config.allow_short, charges, config.position_deadband)
     } else { 0.0 };
     eprintln!("rl ppo: done. train_pnl={:.4} val_pnl={:.4} test_pnl={:.4}", train_pnl, val_pnl, test_pnl);
     let best_episode_actual = if best_iteration > 0 { best_iteration * batch_episodes } else { 0 };
@@ -1441,6 +1523,8 @@ pub fn evaluate(
     states: &Array2<f64>,
     closes: &[f64],
     candle_indices: &[usize],
+    day_boundaries: &[bool],
+    is_day_interval: bool,
     allow_short: bool,
     charges: &BrokerCharges,
     position_deadband: f64,
@@ -1506,6 +1590,21 @@ pub fn evaluate(
                 _ => {}
             }
             if position != 0.0 { holding += 1; }
+        }
+
+        // EOD close for intraday: force-close at last candle of each trading day
+        if !is_day_interval && position != 0.0 {
+            let is_eod = if t + 1 < n {
+                day_boundaries[candle_indices[t]]
+            } else {
+                true
+            };
+            if is_eod {
+                total_pnl += close_position_reward(position, entry_price, price, charges);
+                position = 0.0;
+                entry_price = 0.0;
+                holding = 0;
+            }
         }
     }
     if position != 0.0 && n > 0 {

@@ -288,7 +288,7 @@ impl BrokerCharges {
     }
 }
 
-fn compute_metrics(closes: &[f64], signals: &[f64], charges: &BrokerCharges) -> Metrics {
+fn compute_metrics(closes: &[f64], signals: &[f64], timestamps: &[i64], interval: &str, charges: &BrokerCharges) -> Metrics {
     let mut num_trades = 0i32;
     let mut wins = 0i32;
     let mut total_pnl = 0.0f64;
@@ -310,11 +310,31 @@ fn compute_metrics(closes: &[f64], signals: &[f64], charges: &BrokerCharges) -> 
         if dd > max_drawdown { max_drawdown = dd; }
     };
 
+    let is_day_interval = interval == "day";
     const POSITION_DEADBAND: f64 = 0.05;
     for (i, &target) in signals.iter().enumerate() {
         let target = target.clamp(-1.0, 1.0);
         let delta = (target - position).abs();
         if delta < POSITION_DEADBAND {
+            // Even if no trade, check EOD for intraday
+            if !is_day_interval && position != 0.0 {
+                let is_eod = if i + 1 < signals.len() {
+                    let prev_day = timestamps[i] / 86400;
+                    let next_day = timestamps[i + 1] / 86400;
+                    prev_day != next_day
+                } else {
+                    true
+                };
+                if is_eod {
+                    if position > 0.0 {
+                        record(position * (closes[i] - entry_price), entry_price, closes[i], position);
+                    } else {
+                        record(position.abs() * (entry_price - closes[i]), closes[i], entry_price, position.abs());
+                    }
+                    position = 0.0;
+                    entry_price = 0.0;
+                }
+            }
             continue;
         }
 
@@ -346,6 +366,26 @@ fn compute_metrics(closes: &[f64], signals: &[f64], charges: &BrokerCharges) -> 
             }
         }
         position = target;
+
+        // EOD close for intraday: force-close at last candle of each trading day
+        if !is_day_interval && position != 0.0 {
+            let is_eod = if i + 1 < signals.len() {
+                let prev_day = timestamps[i] / 86400;
+                let next_day = timestamps[i + 1] / 86400;
+                prev_day != next_day
+            } else {
+                true
+            };
+            if is_eod {
+                if position > 0.0 {
+                    record(position * (closes[i] - entry_price), entry_price, closes[i], position);
+                } else {
+                    record(position.abs() * (entry_price - closes[i]), closes[i], entry_price, position.abs());
+                }
+                position = 0.0;
+                entry_price = 0.0;
+            }
+        }
     }
 
     if position != 0.0 {
@@ -567,7 +607,7 @@ async fn process_run_job(
             let all_signals = run_wasm(&wasm, &ic.closes, &ic.opens, &volumes_f64, &ic.highs, &ic.lows)?;
             let extra = ic.extra_count;
             let signals = all_signals[extra..].to_vec();
-            let metrics = compute_metrics(&ic.closes[extra..], &signals, &charges.clone());
+            let metrics = compute_metrics(&ic.closes[extra..], &signals, &ic.timestamps[extra..], &interval, &charges.clone());
             Ok(InstResult {
                 security_id: ic.security_id,
                 exchange_segment: ic.exchange_segment,
@@ -876,6 +916,7 @@ async fn process_rl_job(
     };
 
     let to_candles = |rows: Vec<tokio_postgres::Row>| Candles {
+        timestamps: rows.iter().map(|r| r.get::<_, i64>(0)).collect(),
         opens:   rows.iter().map(|r| r.get::<_, f64>(1)).collect(),
         highs:   rows.iter().map(|r| r.get::<_, f64>(2)).collect(),
         lows:    rows.iter().map(|r| r.get::<_, f64>(3)).collect(),
@@ -951,10 +992,12 @@ async fn process_rl_job(
         minibatch_size: 64,
     };
 
+    let day_boundaries = rl::features::compute_day_boundaries(&train_candles.timestamps);
+    let is_day_interval = strategy_interval == "day";
     let result = if training_method == "reinforce" {
-        train_reinforce(&states, &train_candles.closes, &candle_indices, &cfg, &charges)
+        train_reinforce(&states, &train_candles.closes, &candle_indices, &day_boundaries, is_day_interval, &cfg, &charges)
     } else {
-        train_ppo(&states, &train_candles.closes, &candle_indices, &cfg, &charges)
+        train_ppo(&states, &train_candles.closes, &candle_indices, &day_boundaries, is_day_interval, &cfg, &charges)
     };
     let external_test_pnl: Option<f64> = if let (Some(ref tf), Some(ref tt)) = (&external_test_from, &external_test_to) {
         let test_rows = fetch_candles(tf, tt).await?;
@@ -969,7 +1012,8 @@ async fn process_rl_job(
             if test_states.nrows() == 0 {
                 None
             } else {
-                Some(rl::train::evaluate(&result.actor, &test_states, &test_candles.closes, &test_indices, allow_short, &charges, position_deadband))
+                let test_day_boundaries = rl::features::compute_day_boundaries(&test_candles.timestamps);
+                Some(rl::train::evaluate(&result.actor, &test_states, &test_candles.closes, &test_indices, &test_day_boundaries, is_day_interval, allow_short, &charges, position_deadband))
             }
         }
     } else {
