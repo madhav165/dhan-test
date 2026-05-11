@@ -1,4 +1,4 @@
-use ndarray::Array2;
+use ndarray::{Array1, Array2, Axis};
 use rand::Rng;
 
 pub type Action = f64;
@@ -11,10 +11,11 @@ pub enum Activation {
 
 #[derive(Clone)]
 pub struct MLP {
-    pub layers: Vec<(Vec<f64>, Vec<f64>)>, // (weight, bias) for each hidden layer
-    pub w_out: Vec<f64>,
-    pub b_out: Vec<f64>,
-    pub w_value: Vec<f64>,
+    pub layer_weights: Vec<Array2<f64>>,
+    pub layer_biases: Vec<Array1<f64>>,
+    pub w_out: Array2<f64>,
+    pub b_out: Array1<f64>,
+    pub w_value: Array1<f64>,
     pub b_value: f64,
     pub input_size: usize,
     pub hidden_size: usize,
@@ -35,20 +36,23 @@ impl MLP {
         let normal = Normal::new(0.0, init_scale).unwrap();
         let mut init = |n: usize| -> Vec<f64> { (0..n).map(|_| normal.sample(&mut rng)).collect() };
         
-        let mut layers = vec![];
+        let mut layer_weights = vec![];
+        let mut layer_biases = vec![];
         for layer_idx in 0..num_layers {
             let prev_size = if layer_idx == 0 { input_size } else { hidden_size };
-            let w = init(hidden_size * prev_size);
-            let b = vec![0.0; hidden_size];
-            layers.push((w, b));
+            let w = Array2::from_shape_vec((hidden_size, prev_size), init(hidden_size * prev_size)).unwrap();
+            let b = Array1::zeros(hidden_size);
+            layer_weights.push(w);
+            layer_biases.push(b);
         }
         
         let out_size = if continuous_action { 1 } else { 3 };
         Self {
-            layers,
-            w_out: init(out_size * hidden_size),
-            b_out: vec![0.0; out_size],
-            w_value: init(hidden_size),
+            layer_weights,
+            layer_biases,
+            w_out: Array2::from_shape_vec((out_size, hidden_size), init(out_size * hidden_size)).unwrap(),
+            b_out: Array1::zeros(out_size),
+            w_value: Array1::zeros(hidden_size),
             b_value: 0.0,
             input_size,
             hidden_size,
@@ -57,10 +61,6 @@ impl MLP {
             continuous_action,
             action_std,
         }
-    }
-
-    fn matmul(w: &[f64], x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
-        (0..rows).map(|i| (0..cols).map(|j| w[i * cols + j] * x[j]).sum::<f64>()).collect()
     }
 
     fn activate(&self, v: f64) -> f64 {
@@ -80,41 +80,38 @@ impl MLP {
     /// Forward pass. Returns (pre_activations, activations, output) for all layers.
     /// For discrete: output is [p0, p1, p2] softmax probs.
     /// For continuous: output is [mean, 0.0, 0.0] where mean is tanh-constrained.
-    pub fn forward_full(&self, x: &[f64]) -> (Vec<Vec<f64>>, Vec<Vec<f64>>, [f64; 3]) {
+    pub fn forward_full(&self, x: &[f64]) -> (Vec<Array1<f64>>, Vec<Array1<f64>>, [f64; 3]) {
         let mut pre_acts = vec![];
         let mut acts = vec![];
-        let mut current = x.to_vec();
+        let mut current = Array1::from_vec(x.to_vec());
         
-        for (w, b) in &self.layers {
-            let pre: Vec<f64> = Self::matmul(w, &current, self.hidden_size, current.len())
-                .iter().zip(b).map(|(v, b)| v + b).collect();
-            let h: Vec<f64> = pre.iter().map(|&v| self.activate(v)).collect();
+        for (w, b) in self.layer_weights.iter().zip(&self.layer_biases) {
+            let pre = w.dot(&current) + b;
+            let h = pre.mapv(|v| self.activate(v));
             pre_acts.push(pre);
             acts.push(h.clone());
             current = h;
         }
         
         if self.continuous_action {
-            let logit = Self::matmul(&self.w_out, &current, 1, self.hidden_size)[0] + self.b_out[0];
+            let logit = self.w_out.dot(&current)[0] + self.b_out[0];
             let mean = logit.tanh();
             return (pre_acts, acts, [mean, 0.0, 0.0]);
         }
         
-        let logits: Vec<f64> = Self::matmul(&self.w_out, &current, 3, self.hidden_size)
-            .iter().zip(&self.b_out).map(|(v, b)| v + b).collect();
-        
+        let logits = self.w_out.dot(&current) + &self.b_out;
         let max = logits.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let exp: Vec<f64> = logits.iter().map(|v| (v - max).exp()).collect();
-        let sum: f64 = exp.iter().sum();
+        let exp = logits.mapv(|v| (v - max).exp());
+        let sum: f64 = exp.sum();
         let probs = [exp[0] / sum, exp[1] / sum, exp[2] / sum];
         
         (pre_acts, acts, probs)
     }
 
-    pub fn forward_full_with_value(&self, x: &[f64]) -> (Vec<Vec<f64>>, Vec<Vec<f64>>, [f64; 3], f64) {
+    pub fn forward_full_with_value(&self, x: &[f64]) -> (Vec<Array1<f64>>, Vec<Array1<f64>>, [f64; 3], f64) {
         let (pre_acts, acts, probs) = self.forward_full(x);
         let h_last = acts.last().unwrap();
-        let value = h_last.iter().zip(&self.w_value).map(|(h, w)| h * w).sum::<f64>() + self.b_value;
+        let value = h_last.dot(&self.w_value) + self.b_value;
         (pre_acts, acts, probs, value)
     }
 
@@ -158,88 +155,62 @@ impl MLP {
     pub fn accumulate_grad(&self, x: &[f64], action: Action, advantage: f64, grads: &mut Grads) {
         let (pre_acts, acts, probs) = self.forward_full(x);
         let h_last = acts.last().unwrap();
-        
+
         if self.continuous_action {
             let mean = probs[0];
             let std = self.action_std;
-            // d(log π)/d(mean) = (action - mean) / std^2
-            // With tanh on mean: d(mean)/d(logit) = 1 - mean^2
             let d_mean = -advantage * (action - mean) / (std * std) * (1.0 - mean * mean);
-            for j in 0..self.hidden_size {
-                grads.w_out[j] += d_mean * h_last[j];
-            }
+            grads.w_out += &(h_last.clone().insert_axis(Axis(0)) * d_mean);
             grads.b_out[0] += d_mean;
-            
-            let mut d_h = vec![0.0f64; self.hidden_size];
-            for j in 0..self.hidden_size {
-                d_h[j] += self.w_out[j] * d_mean;
-            }
-            
+
+            let mut d_h = &self.w_out.row(0) * d_mean;
+
             for layer_idx in (0..self.num_layers).rev() {
                 let pre = &pre_acts[layer_idx];
-                let prev_h = if layer_idx == 0 { x.to_vec() } else { acts[layer_idx - 1].clone() };
-                let d_pre: Vec<f64> = pre.iter().zip(&d_h).map(|(&p, &g)| g * self.act_derivative(p)).collect();
-                
-                for i in 0..self.hidden_size {
-                    for j in 0..prev_h.len() {
-                        grads.layer_weights[layer_idx][i * prev_h.len() + j] += d_pre[i] * prev_h[j];
-                    }
-                    grads.layer_biases[layer_idx][i] += d_pre[i];
+                let prev_h = if layer_idx == 0 { Array1::from(x.to_vec()) } else { acts[layer_idx - 1].clone() };
+                let d_pre = pre.mapv(|p| self.act_derivative(p)) * &d_h;
+
+                for (a, b) in grads.layer_biases[layer_idx].iter_mut().zip(d_pre.iter()) {
+                    *a += b;
                 }
-                
+                let dw = d_pre.clone().insert_axis(Axis(1)) * prev_h.insert_axis(Axis(0));
+                for (a, b) in grads.layer_weights[layer_idx].iter_mut().zip(dw.iter()) {
+                    *a += b;
+                }
+
                 if layer_idx > 0 {
-                    d_h = vec![0.0f64; prev_h.len()];
-                    let (w, _) = &self.layers[layer_idx];
-                    for j in 0..prev_h.len() {
-                        for i in 0..self.hidden_size {
-                            d_h[j] += w[i * prev_h.len() + j] * d_pre[i];
-                        }
-                    }
+                    d_h = self.layer_weights[layer_idx].t().dot(&d_pre);
                 }
             }
             return;
         }
-        
-        let mut d_logits = [0.0f64; 3];
+
+        let mut d_logits = Array1::zeros(3);
         for k in 0..3 {
             let indicator = if k == action as usize { 1.0 } else { 0.0 };
             d_logits[k] = -advantage * (indicator - probs[k]);
         }
-        
-        for i in 0..3 {
-            for j in 0..self.hidden_size {
-                grads.w_out[i * self.hidden_size + j] += d_logits[i] * h_last[j];
-            }
-            grads.b_out[i] += d_logits[i];
-        }
-        
-        let mut d_h = vec![0.0f64; self.hidden_size];
-        for j in 0..self.hidden_size {
-            for i in 0..3 {
-                d_h[j] += self.w_out[i * self.hidden_size + j] * d_logits[i];
-            }
-        }
-        
+
+        grads.b_out += &d_logits;
+        grads.w_out += &(h_last.clone().insert_axis(Axis(0)) * d_logits.clone().insert_axis(Axis(1)));
+
+        let mut d_h = self.w_out.t().dot(&d_logits);
+
         for layer_idx in (0..self.num_layers).rev() {
             let pre = &pre_acts[layer_idx];
-            let prev_h = if layer_idx == 0 { x.to_vec() } else { acts[layer_idx - 1].clone() };
-            let d_pre: Vec<f64> = pre.iter().zip(&d_h).map(|(&p, &g)| g * self.act_derivative(p)).collect();
-            
-            for i in 0..self.hidden_size {
-                for j in 0..prev_h.len() {
-                    grads.layer_weights[layer_idx][i * prev_h.len() + j] += d_pre[i] * prev_h[j];
+            let prev_h = if layer_idx == 0 { Array1::from(x.to_vec()) } else { acts[layer_idx - 1].clone() };
+            let d_pre = pre.mapv(|p| self.act_derivative(p)) * &d_h;
+
+                for (a, b) in grads.layer_biases[layer_idx].iter_mut().zip(d_pre.iter()) {
+                    *a += b;
                 }
-                grads.layer_biases[layer_idx][i] += d_pre[i];
-            }
-            
+                let dw = d_pre.clone().insert_axis(Axis(1)) * prev_h.insert_axis(Axis(0));
+                for (a, b) in grads.layer_weights[layer_idx].iter_mut().zip(dw.iter()) {
+                    *a += b;
+                }
+
             if layer_idx > 0 {
-                d_h = vec![0.0f64; prev_h.len()];
-                let (w, _) = &self.layers[layer_idx];
-                for j in 0..prev_h.len() {
-                    for i in 0..self.hidden_size {
-                        d_h[j] += w[i * prev_h.len() + j] * d_pre[i];
-                    }
-                }
+                d_h = self.layer_weights[layer_idx].t().dot(&d_pre);
             }
         }
     }
@@ -272,51 +243,36 @@ impl MLP {
 
             let mut d_mean = 0.0;
             if !use_clipped {
-                // d(ratio)/d(mean) = ratio * d(log π)/d(mean) = ratio * (action - mean) / std^2
                 d_mean = -advantage * ratio * diff / (std * std);
             }
-            // Entropy of Gaussian is constant w.r.t. mean, so no entropy gradient for mean.
-            // Backprop through tanh on mean.
             d_mean *= 1.0 - mean * mean;
 
             let d_value = value_coef * (value - ret);
 
-            for j in 0..self.hidden_size {
-                grads.w_out[j] += d_mean * h_last[j];
-            }
+            grads.w_out += &(h_last.clone().insert_axis(Axis(0)) * d_mean);
             grads.b_out[0] += d_mean;
 
-            for j in 0..self.hidden_size {
-                grads.w_value[j] += d_value * h_last[j];
-            }
+            grads.w_value += &(h_last * d_value);
             grads.b_value += d_value;
 
-            let mut d_h = vec![0.0f64; self.hidden_size];
-            for j in 0..self.hidden_size {
-                d_h[j] += self.w_out[j] * d_mean;
-                d_h[j] += self.w_value[j] * d_value;
-            }
+            let mut d_h = &self.w_out.row(0) * d_mean;
+            d_h += &(self.w_value.clone() * d_value);
 
             for layer_idx in (0..self.num_layers).rev() {
                 let pre = &pre_acts[layer_idx];
-                let prev_h = if layer_idx == 0 { x.to_vec() } else { acts[layer_idx - 1].clone() };
-                let d_pre: Vec<f64> = pre.iter().zip(&d_h).map(|(&p, &g)| g * self.act_derivative(p)).collect();
-                
-                for i in 0..self.hidden_size {
-                    for j in 0..prev_h.len() {
-                        grads.layer_weights[layer_idx][i * prev_h.len() + j] += d_pre[i] * prev_h[j];
-                    }
-                    grads.layer_biases[layer_idx][i] += d_pre[i];
+                let prev_h = if layer_idx == 0 { Array1::from(x.to_vec()) } else { acts[layer_idx - 1].clone() };
+                let d_pre = pre.mapv(|p| self.act_derivative(p)) * &d_h;
+
+                for (a, b) in grads.layer_biases[layer_idx].iter_mut().zip(d_pre.iter()) {
+                    *a += b;
                 }
-                
+                let dw = d_pre.clone().insert_axis(Axis(1)) * prev_h.insert_axis(Axis(0));
+                for (a, b) in grads.layer_weights[layer_idx].iter_mut().zip(dw.iter()) {
+                    *a += b;
+                }
+
                 if layer_idx > 0 {
-                    d_h = vec![0.0f64; prev_h.len()];
-                    let (w, _) = &self.layers[layer_idx];
-                    for j in 0..prev_h.len() {
-                        for i in 0..self.hidden_size {
-                            d_h[j] += w[i * prev_h.len() + j] * d_pre[i];
-                        }
-                    }
+                    d_h = self.layer_weights[layer_idx].t().dot(&d_pre);
                 }
             }
             return;
@@ -329,7 +285,7 @@ impl MLP {
         let clipped = ratio.clamp(1.0 - clip_epsilon, 1.0 + clip_epsilon);
         let use_clipped = ratio * advantage > clipped * advantage;
 
-        let mut d_logits = [0.0f64; 3];
+        let mut d_logits = Array1::zeros(3);
         if !use_clipped {
             for k in 0..3 {
                 let indicator = if k == action_idx { 1.0 } else { 0.0 };
@@ -344,46 +300,30 @@ impl MLP {
 
         let d_value = value_coef * (value - ret);
 
-        for i in 0..3 {
-            for j in 0..self.hidden_size {
-                grads.w_out[i * self.hidden_size + j] += d_logits[i] * h_last[j];
-            }
-            grads.b_out[i] += d_logits[i];
-        }
+        grads.b_out += &d_logits;
+        grads.w_out += &(h_last.clone().insert_axis(Axis(0)) * d_logits.clone().insert_axis(Axis(1)));
 
-        for j in 0..self.hidden_size {
-            grads.w_value[j] += d_value * h_last[j];
-        }
+        grads.w_value += &(h_last * d_value);
         grads.b_value += d_value;
 
-        let mut d_h = vec![0.0f64; self.hidden_size];
-        for j in 0..self.hidden_size {
-            for i in 0..3 {
-                d_h[j] += self.w_out[i * self.hidden_size + j] * d_logits[i];
-            }
-            d_h[j] += self.w_value[j] * d_value;
-        }
+        let mut d_h = self.w_out.t().dot(&d_logits);
+        d_h += &(self.w_value.clone() * d_value);
 
         for layer_idx in (0..self.num_layers).rev() {
             let pre = &pre_acts[layer_idx];
-            let prev_h = if layer_idx == 0 { x.to_vec() } else { acts[layer_idx - 1].clone() };
-            let d_pre: Vec<f64> = pre.iter().zip(&d_h).map(|(&p, &g)| g * self.act_derivative(p)).collect();
-            
-            for i in 0..self.hidden_size {
-                for j in 0..prev_h.len() {
-                    grads.layer_weights[layer_idx][i * prev_h.len() + j] += d_pre[i] * prev_h[j];
+            let prev_h = if layer_idx == 0 { Array1::from(x.to_vec()) } else { acts[layer_idx - 1].clone() };
+            let d_pre = pre.mapv(|p| self.act_derivative(p)) * &d_h;
+
+                for (a, b) in grads.layer_biases[layer_idx].iter_mut().zip(d_pre.iter()) {
+                    *a += b;
                 }
-                grads.layer_biases[layer_idx][i] += d_pre[i];
-            }
-            
+                let dw = d_pre.clone().insert_axis(Axis(1)) * prev_h.insert_axis(Axis(0));
+                for (a, b) in grads.layer_weights[layer_idx].iter_mut().zip(dw.iter()) {
+                    *a += b;
+                }
+
             if layer_idx > 0 {
-                d_h = vec![0.0f64; prev_h.len()];
-                let (w, _) = &self.layers[layer_idx];
-                for j in 0..prev_h.len() {
-                    for i in 0..self.hidden_size {
-                        d_h[j] += w[i * prev_h.len() + j] * d_pre[i];
-                    }
-                }
+                d_h = self.layer_weights[layer_idx].t().dot(&d_pre);
             }
         }
     }
@@ -392,24 +332,35 @@ impl MLP {
         let (beta1, beta2, eps) = (0.9f64, 0.999f64, 1e-8f64);
         let bc1 = 1.0 - beta1.powi(t as i32);
         let bc2 = 1.0 - beta2.powi(t as i32);
-        
-        macro_rules! update {
-            ($param:expr, $grad:expr, $m:expr, $v:expr) => {
-                for i in 0..$param.len() {
-                    $m[i] = beta1 * $m[i] + (1.0 - beta1) * $grad[i];
-                    $v[i] = beta2 * $v[i] + (1.0 - beta2) * $grad[i].powi(2);
-                    $param[i] -= lr * ($m[i] / bc1) / (($v[i] / bc2).sqrt() + eps);
-                }
-            };
+
+        fn update(param: &mut [f64], grad: &[f64], m: &mut [f64], v: &mut [f64], beta1: f64, beta2: f64, lr: f64, bc1: f64, bc2: f64, eps: f64) {
+            for i in 0..param.len() {
+                m[i] = beta1 * m[i] + (1.0 - beta1) * grad[i];
+                v[i] = beta2 * v[i] + (1.0 - beta2) * grad[i].powi(2);
+                param[i] -= lr * (m[i] / bc1) / ((v[i] / bc2).sqrt() + eps);
+            }
         }
-        
-        for i in 0..self.layers.len() {
-            update!(self.layers[i].0, grads.layer_weights[i], m.layer_weights[i], v.layer_weights[i]);
-            update!(self.layers[i].1, grads.layer_biases[i], m.layer_biases[i], v.layer_biases[i]);
+
+        for i in 0..self.layer_weights.len() {
+            update(
+                self.layer_weights[i].as_slice_mut().unwrap(),
+                grads.layer_weights[i].as_slice().unwrap(),
+                m.layer_weights[i].as_slice_mut().unwrap(),
+                v.layer_weights[i].as_slice_mut().unwrap(),
+                beta1, beta2, lr, bc1, bc2, eps
+            );
+            update(
+                self.layer_biases[i].as_slice_mut().unwrap(),
+                grads.layer_biases[i].as_slice().unwrap(),
+                m.layer_biases[i].as_slice_mut().unwrap(),
+                v.layer_biases[i].as_slice_mut().unwrap(),
+                beta1, beta2, lr, bc1, bc2, eps
+            );
         }
-        update!(self.w_out, grads.w_out, m.w_out, v.w_out);
-        update!(self.b_out, grads.b_out, m.b_out, v.b_out);
-        update!(self.w_value, grads.w_value, m.w_value, v.w_value);
+        update(self.w_out.as_slice_mut().unwrap(), grads.w_out.as_slice().unwrap(), m.w_out.as_slice_mut().unwrap(), v.w_out.as_slice_mut().unwrap(), beta1, beta2, lr, bc1, bc2, eps);
+        update(self.b_out.as_slice_mut().unwrap(), grads.b_out.as_slice().unwrap(), m.b_out.as_slice_mut().unwrap(), v.b_out.as_slice_mut().unwrap(), beta1, beta2, lr, bc1, bc2, eps);
+        update(self.w_value.as_slice_mut().unwrap(), grads.w_value.as_slice().unwrap(), m.w_value.as_slice_mut().unwrap(), v.w_value.as_slice_mut().unwrap(), beta1, beta2, lr, bc1, bc2, eps);
+
         m.b_value = beta1 * m.b_value + (1.0 - beta1) * grads.b_value;
         let v_bv = beta2 * v.b_value + (1.0 - beta2) * grads.b_value.powi(2);
         v.b_value = v_bv;
@@ -418,13 +369,13 @@ impl MLP {
 
     pub fn params(&self) -> Vec<f64> {
         let mut p = vec![];
-        for (w, b) in &self.layers {
-            p.extend_from_slice(w);
-            p.extend_from_slice(b);
+        for (w, b) in self.layer_weights.iter().zip(&self.layer_biases) {
+            p.extend(w.iter());
+            p.extend(b.iter());
         }
-        p.extend_from_slice(&self.w_out);
-        p.extend_from_slice(&self.b_out);
-        p.extend_from_slice(&self.w_value);
+        p.extend(self.w_out.iter());
+        p.extend(self.b_out.iter());
+        p.extend(self.w_value.iter());
         p.push(self.b_value);
         p
     }
@@ -435,30 +386,18 @@ impl MLP {
         }
         match reg_type {
             "l1" => {
-                for (layer_idx, (w, _)) in self.layers.iter().enumerate() {
-                    for j in 0..w.len() {
-                        grads.layer_weights[layer_idx][j] += lambda * w[j].signum();
-                    }
+                for (layer_idx, w) in self.layer_weights.iter().enumerate() {
+                    grads.layer_weights[layer_idx] += &w.mapv(|v| lambda * v.signum());
                 }
-                for j in 0..self.w_out.len() {
-                    grads.w_out[j] += lambda * self.w_out[j].signum();
-                }
-                for j in 0..self.w_value.len() {
-                    grads.w_value[j] += lambda * self.w_value[j].signum();
-                }
+                grads.w_out += &self.w_out.mapv(|v| lambda * v.signum());
+                grads.w_value += &self.w_value.mapv(|v| lambda * v.signum());
             }
             "l2" => {
-                for (layer_idx, (w, _)) in self.layers.iter().enumerate() {
-                    for j in 0..w.len() {
-                        grads.layer_weights[layer_idx][j] += lambda * w[j];
-                    }
+                for (layer_idx, w) in self.layer_weights.iter().enumerate() {
+                    grads.layer_weights[layer_idx] += &(w * lambda);
                 }
-                for j in 0..self.w_out.len() {
-                    grads.w_out[j] += lambda * self.w_out[j];
-                }
-                for j in 0..self.w_value.len() {
-                    grads.w_value[j] += lambda * self.w_value[j];
-                }
+                grads.w_out += &(self.w_out.clone() * lambda);
+                grads.w_value += &(self.w_value.clone() * lambda);
             }
             _ => {}
         }
@@ -466,68 +405,73 @@ impl MLP {
 }
 
 pub struct Grads {
-    pub layer_weights: Vec<Vec<f64>>,
-    pub layer_biases: Vec<Vec<f64>>,
-    pub w_out: Vec<f64>,
-    pub b_out: Vec<f64>,
-    pub w_value: Vec<f64>,
+    pub layer_weights: Vec<Array2<f64>>,
+    pub layer_biases: Vec<Array1<f64>>,
+    pub w_out: Array2<f64>,
+    pub b_out: Array1<f64>,
+    pub w_value: Array1<f64>,
     pub b_value: f64,
 }
 
 impl Grads {
     fn zero(net: &MLP) -> Self {
         Self {
-            layer_weights: net.layers.iter().map(|(w, _)| vec![0.0; w.len()]).collect(),
-            layer_biases: net.layers.iter().map(|(_, b)| vec![0.0; b.len()]).collect(),
-            w_out: vec![0.0; net.w_out.len()],
-            b_out: vec![0.0; net.b_out.len()],
-            w_value: vec![0.0; net.w_value.len()],
+            layer_weights: net.layer_weights.iter().map(|w| Array2::zeros(w.raw_dim())).collect(),
+            layer_biases: net.layer_biases.iter().map(|b| Array1::zeros(b.raw_dim())).collect(),
+            w_out: Array2::zeros(net.w_out.raw_dim()),
+            b_out: Array1::zeros(net.b_out.raw_dim()),
+            w_value: Array1::zeros(net.w_value.raw_dim()),
             b_value: 0.0,
         }
     }
 
     fn clip_global_norm(&mut self, max_norm: f64) {
-        let sum_sq = self.layer_weights.iter().flat_map(|w| w.iter())
-            .chain(self.layer_biases.iter().flat_map(|b| b.iter()))
-            .chain(&self.w_out).chain(&self.b_out)
-            .chain(&self.w_value).chain(std::iter::once(&self.b_value))
-            .map(|v| v * v)
-            .sum::<f64>();
+        let mut sum_sq = 0.0f64;
+        for w in &self.layer_weights {
+            sum_sq += w.iter().map(|v| v * v).sum::<f64>();
+        }
+        for b in &self.layer_biases {
+            sum_sq += b.iter().map(|v| v * v).sum::<f64>();
+        }
+        sum_sq += self.w_out.iter().map(|v| v * v).sum::<f64>();
+        sum_sq += self.b_out.iter().map(|v| v * v).sum::<f64>();
+        sum_sq += self.w_value.iter().map(|v| v * v).sum::<f64>();
+        sum_sq += self.b_value * self.b_value;
         let norm = sum_sq.sqrt();
         if norm <= max_norm || norm < 1e-12 {
             return;
         }
         let scale = max_norm / norm;
         for w in &mut self.layer_weights {
-            for v in w.iter_mut() { *v *= scale; }
+            *w *= scale;
         }
         for b in &mut self.layer_biases {
-            for v in b.iter_mut() { *v *= scale; }
+            *b *= scale;
         }
-        for v in self.w_out.iter_mut().chain(&mut self.b_out).chain(&mut self.w_value) {
-            *v *= scale;
-        }
+        self.w_out *= scale;
+        self.b_out *= scale;
+        self.w_value *= scale;
         self.b_value *= scale;
     }
 }
 
 pub struct AdamState {
-    pub layer_weights: Vec<Vec<f64>>,
-    pub layer_biases: Vec<Vec<f64>>,
-    pub w_out: Vec<f64>,
-    pub b_out: Vec<f64>,
-    pub w_value: Vec<f64>,
+    pub layer_weights: Vec<Array2<f64>>,
+    pub layer_biases: Vec<Array1<f64>>,
+    pub w_out: Array2<f64>,
+    pub b_out: Array1<f64>,
+    pub w_value: Array1<f64>,
     pub b_value: f64,
 }
 
 impl AdamState {
     fn zero(net: &MLP) -> Self {
         Self {
-            layer_weights: net.layers.iter().map(|(w, _)| vec![0.0; w.len()]).collect(),
-            layer_biases: net.layers.iter().map(|(_, b)| vec![0.0; b.len()]).collect(),
-            w_out: vec![0.0; net.w_out.len()],
-            b_out: vec![0.0; net.b_out.len()],
-            w_value: vec![0.0; net.w_value.len()],
+            layer_weights: net.layer_weights.iter().map(|w| Array2::zeros(w.raw_dim())).collect(),
+            layer_biases: net.layer_biases.iter().map(|b| Array1::zeros(b.raw_dim())).collect(),
+            w_out: Array2::zeros(net.w_out.raw_dim()),
+            b_out: Array1::zeros(net.b_out.raw_dim()),
+            w_value: Array1::zeros(net.w_value.raw_dim()),
             b_value: 0.0,
         }
     }
@@ -575,7 +519,6 @@ pub struct TrainConfig {
     pub max_holding_days: Option<usize>,
     pub penalty_trades_per_month: Option<f64>,
     pub max_trades_per_month: Option<usize>,
-    pub training_method: String,
     pub ppo_epochs: usize,
     pub clip_epsilon: f64,
     pub value_coef: f64,
@@ -613,7 +556,6 @@ impl Default for TrainConfig {
             max_holding_days: None,
             penalty_trades_per_month: None,
             max_trades_per_month: None,
-            training_method: "ppo".into(),
             ppo_epochs: 4,
             clip_epsilon: 0.2,
             value_coef: 0.5,
@@ -1472,4 +1414,103 @@ pub fn weights_to_bytes(net: &MLP) -> Result<Vec<u8>, String> {
         return Err("training diverged: network weights contain NaN/Inf".to_string());
     }
     Ok(params.iter().flat_map(|&v| v.to_le_bytes()).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mlp_forward_discrete() {
+        let net = MLP::new(5, 4, 2, Activation::Tanh, false, 0.3);
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let (pre, acts, probs) = net.forward_full(&x);
+        assert_eq!(pre.len(), 2);
+        assert_eq!(acts.len(), 2);
+        assert!(probs.iter().all(|&p| p >= 0.0 && p <= 1.0));
+        assert!((probs.iter().sum::<f64>() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_mlp_forward_continuous() {
+        let net = MLP::new(5, 4, 2, Activation::Tanh, true, 0.3);
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let (_, _, probs) = net.forward_full(&x);
+        assert!(probs[0] >= -1.0 && probs[0] <= 1.0);
+    }
+
+    #[test]
+    fn test_mlp_grads_reinforce() {
+        let net = MLP::new(5, 4, 2, Activation::Tanh, false, 0.3);
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let mut grads = Grads::zero(&net);
+        net.accumulate_grad(&x, 0.0, 1.0, &mut grads);
+
+        // All gradient arrays should be non-zero after backward pass
+        for w in &grads.layer_weights {
+            assert!(w.iter().any(|&v| v != 0.0), "layer weight gradient should be non-zero");
+        }
+        for b in &grads.layer_biases {
+            assert!(b.iter().any(|&v| v != 0.0), "layer bias gradient should be non-zero");
+        }
+        assert!(grads.w_out.iter().any(|&v| v != 0.0), "w_out gradient should be non-zero");
+        assert!(grads.b_out.iter().any(|&v| v != 0.0), "b_out gradient should be non-zero");
+    }
+
+    #[test]
+    fn test_mlp_grads_ppo() {
+        let net = MLP::new(5, 4, 2, Activation::Tanh, false, 0.3);
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let mut grads = Grads::zero(&net);
+        net.accumulate_grad_ppo(&x, 0.0, -0.5, 1.0, 0.5, 0.2, 0.5, 0.01, &mut grads);
+
+        for w in &grads.layer_weights {
+            assert!(w.iter().any(|&v| v != 0.0), "layer weight gradient should be non-zero");
+        }
+        for b in &grads.layer_biases {
+            assert!(b.iter().any(|&v| v != 0.0), "layer bias gradient should be non-zero");
+        }
+        assert!(grads.w_value.iter().any(|&v| v != 0.0), "w_value gradient should be non-zero");
+    }
+
+    #[test]
+    fn test_mlp_adam_update() {
+        let mut net = MLP::new(5, 4, 2, Activation::Tanh, false, 0.3);
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let mut grads = Grads::zero(&net);
+        net.accumulate_grad(&x, 0.0, 1.0, &mut grads);
+
+        let mut m = AdamState::zero(&net);
+        let mut v = AdamState::zero(&net);
+        net.apply_adam(&grads, &mut m, &mut v, 1, 1e-3);
+
+        // Params should have changed
+        let params_after = net.params();
+        assert!(params_after.iter().any(|&v| v != 0.0));
+    }
+
+    #[test]
+    fn test_mlp_params_roundtrip() {
+        let net = MLP::new(5, 4, 2, Activation::Tanh, false, 0.3);
+        let params = net.params();
+        assert!(!params.is_empty());
+        assert!(params.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn test_mlp_regularization() {
+        let net = MLP::new(5, 4, 2, Activation::Tanh, false, 0.3);
+        let mut grads = Grads::zero(&net);
+
+        // L2 on zero gradients: grads should become exactly lambda * weights
+        net.add_regularization(&mut grads, "l2", 0.01);
+        for (w, g) in net.layer_weights.iter().zip(&grads.layer_weights) {
+            let expected = w * 0.01;
+            assert!(expected.iter().zip(g.iter()).all(|(e, a)| (e - a).abs() < 1e-12));
+        }
+        let expected_w_out = &net.w_out * 0.01;
+        assert!(expected_w_out.iter().zip(grads.w_out.iter()).all(|(e, a)| (e - a).abs() < 1e-12));
+        let expected_w_value = &net.w_value * 0.01;
+        assert!(expected_w_value.iter().zip(grads.w_value.iter()).all(|(e, a)| (e - a).abs() < 1e-12));
+    }
 }

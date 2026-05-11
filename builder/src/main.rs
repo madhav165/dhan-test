@@ -917,7 +917,6 @@ async fn process_rl_job(
         max_holding_days,
         penalty_trades_per_month: penalty_trades,
         max_trades_per_month,
-        training_method: training_method.clone(),
         ppo_epochs,
         clip_epsilon,
         value_coef,

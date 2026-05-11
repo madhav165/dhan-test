@@ -124,6 +124,16 @@ fn fmt_slice(v: &[f64]) -> String {
     format!("&[{}]", vals.join(","))
 }
 
+fn fmt_array1(v: &ndarray::Array1<f64>) -> String {
+    let vals: Vec<String> = v.iter().map(|x| format!("{:.10}_f64", x)).collect();
+    format!("&[{}]", vals.join(","))
+}
+
+fn fmt_array2(v: &ndarray::Array2<f64>) -> String {
+    let vals: Vec<String> = v.iter().map(|x| format!("{:.10}_f64", x)).collect();
+    format!("&[{}]", vals.join(","))
+}
+
 fn indicator_expr(spec: &IndicatorSpec) -> String {
     match spec {
         IndicatorSpec::Rsi { period } => format!("rsi(prices, {})", period),
@@ -160,12 +170,12 @@ pub fn net_to_rust(
 
     lines.push(format!("    if i < {} {{ return 0.0; }}", lookback));
 
-    for (idx, (w, b)) in net.layers.iter().enumerate() {
-        lines.push(format!("    let w{}: &[f64] = {};", idx, fmt_slice(w)));
-        lines.push(format!("    let b{}: &[f64] = {};", idx, fmt_slice(b)));
+    for (idx, (w, b)) in net.layer_weights.iter().zip(&net.layer_biases).enumerate() {
+        lines.push(format!("    let w{}: &[f64] = {};", idx, fmt_array2(w)));
+        lines.push(format!("    let b{}: &[f64] = {};", idx, fmt_array1(b)));
     }
-    lines.push(format!("    let w_out: &[f64] = {};", fmt_slice(&net.w_out)));
-    lines.push(format!("    let b_out: &[f64] = {};", fmt_slice(&net.b_out)));
+    lines.push(format!("    let w_out: &[f64] = {};", fmt_array2(&net.w_out)));
+    lines.push(format!("    let b_out: &[f64] = {};", fmt_array1(&net.b_out)));
     lines.push(format!("    let means: &[f64] = {};", fmt_slice(means)));
     lines.push(format!("    let stds: &[f64] = {};", fmt_slice(stds)));
     lines.push(format!("    let hidden = {};", net.hidden_size));
@@ -197,7 +207,7 @@ pub fn net_to_rust(
 
     lines.push("    let mm = |w: &[f64], x: &[f64], r: usize, c: usize| -> Vec<f64> { (0..r).map(|i| (0..c).map(|j| w[i*c+j]*x[j]).sum::<f64>()).collect() };".into());
     lines.push("    let mut h = feat;".into());
-    for (idx, _) in net.layers.iter().enumerate() {
+    for (idx, _) in net.layer_weights.iter().enumerate() {
         let prev = if idx == 0 { "input" } else { "hidden" };
         lines.push(format!(
             "    h = mm(w{idx},&h,hidden,{prev}).into_iter().zip(b{idx}).map(|(v,b)| (v+b).{act}).collect();"
