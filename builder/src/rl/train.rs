@@ -531,6 +531,7 @@ pub struct TrainConfig {
     pub entropy_coef: f64,
     pub gae_lambda: f64,
     pub batch_episodes: usize,
+    pub minibatch_size: usize,
     pub hidden_size: usize,
     pub num_layers: usize,
     pub activation: String,
@@ -541,6 +542,7 @@ pub struct TrainConfig {
     pub regularization_lambda: f64,
     pub continuous_action: bool,
     pub action_std: f64,
+    pub action_std_schedule: bool,
     pub action_penalty: f64,
     pub position_deadband: f64,
 }
@@ -564,10 +566,13 @@ impl Default for TrainConfig {
             max_trades_per_month: None,
             ppo_epochs: 4,
             clip_epsilon: 0.2,
-            value_coef: 0.5,
+            // Reduced from 0.5 to mitigate shared network interference.
+            // Full fix: separate Actor and Critic into distinct MLPs.
+            value_coef: 0.25,
             entropy_coef: 0.01,
             gae_lambda: 0.95,
             batch_episodes: 8,
+            minibatch_size: 64,
             hidden_size: 64,
             num_layers: 2,
             activation: "relu".into(),
@@ -578,6 +583,7 @@ impl Default for TrainConfig {
             regularization_lambda: 0.001,
             continuous_action: false,
             action_std: 0.3,
+            action_std_schedule: true,
             action_penalty: 0.01,
             position_deadband: 0.05,
         }
@@ -597,12 +603,34 @@ fn compute_returns(rewards: &[f64], gamma: f64) -> Vec<f64> {
     returns.iter().map(|r| (r - mean) / std).collect()
 }
 
-fn normalize_rewards(rewards: &mut [f64]) {
-    if rewards.len() < 2 { return; }
-    let mean = rewards.iter().sum::<f64>() / rewards.len() as f64;
-    let std = (rewards.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / rewards.len() as f64).sqrt().max(1e-8);
-    for r in rewards.iter_mut() {
-        *r = (*r - mean) / std;
+/// Running mean and variance tracker using Welford's online algorithm.
+struct RunningNormalizer {
+    count: usize,
+    mean: f64,
+    m2: f64,
+}
+
+impl RunningNormalizer {
+    fn new() -> Self {
+        Self { count: 0, mean: 0.0, m2: 0.0 }
+    }
+
+    fn update(&mut self, values: &[f64]) {
+        for &x in values {
+            self.count += 1;
+            let delta = x - self.mean;
+            self.mean += delta / self.count as f64;
+            let delta2 = x - self.mean;
+            self.m2 += delta * delta2;
+        }
+    }
+
+    fn normalize(&self, values: &mut [f64]) {
+        if self.count < 2 { return; }
+        let std = (self.m2 / self.count as f64).sqrt().max(1e-8);
+        for v in values.iter_mut() {
+            *v = (*v - self.mean) / std;
+        }
     }
 }
 
@@ -616,6 +644,13 @@ fn entropy_at_step(initial_entropy: f64, step: usize, total_steps: usize) -> f64
     if total_steps == 0 { return initial_entropy; }
     let frac = step as f64 / total_steps as f64;
     initial_entropy * (1.0 - frac)
+}
+
+fn action_std_at_step(initial_std: f64, step: usize, total_steps: usize) -> f64 {
+    if total_steps == 0 { return initial_std; }
+    let frac = step as f64 / total_steps as f64;
+    // Anneal from initial_std down to 1% of initial_std
+    initial_std * (1.0 - 0.99 * frac).max(0.01)
 }
 
 pub fn split_points(n: usize) -> (usize, usize) {
@@ -676,13 +711,18 @@ fn step_reward(
                 *entry_price = price;
                 *trades += 1;
             } else {
-                // Same direction: update weighted average
-                let same_dir_pos = if prev_pos > 0.0 { prev_pos.min(action) } else { prev_pos.max(action) };
-                let added = delta.abs();
-                let new_size = action.abs();
-                if new_size > 0.0 {
-                    *entry_price = (*entry_price * same_dir_pos.abs() + price * added) / new_size;
+                // Same direction
+                if action.abs() > prev_pos.abs() {
+                    // Adding to position: update weighted average
+                    let same_dir_pos = if prev_pos > 0.0 { prev_pos.min(action) } else { prev_pos.max(action) };
+                    let added = delta.abs();
+                    let new_size = action.abs();
+                    if new_size > 0.0 {
+                        *entry_price = (*entry_price * same_dir_pos.abs() + price * added) / new_size;
+                    }
+                    *trades += 1;
                 }
+                // If reducing, entry_price stays the same for remaining shares
             }
 
             *position = action;
@@ -912,6 +952,19 @@ fn rollout(
         prev_action = action;
     }
 
+    // End-of-episode fee evasion fix: force-close any open position and subtract costs
+    if position != 0.0 && n > 0 {
+        let last_price = closes[candle_indices[start + n - 1]];
+        let close_cost = if position > 0.0 {
+            charges.cost(entry_price, last_price, position)
+        } else {
+            charges.cost(last_price, entry_price, position.abs())
+        };
+        if let Some(last_reward) = rewards.last_mut() {
+            *last_reward -= close_cost;
+        }
+    }
+
     let (returns, episode_return) = objective_returns(&rewards, config);
     for (s, r) in steps.iter_mut().zip(returns) { s.ret = r; }
     (steps, episode_return)
@@ -959,12 +1012,12 @@ fn objective_returns(rewards: &[f64], config: &TrainConfig) -> (Vec<f64>, f64) {
     }
 }
 
-fn gae(rewards: &[f64], values: &[f64], gamma: f64, lambda: f64) -> Vec<f64> {
+fn gae(rewards: &[f64], values: &[f64], gamma: f64, lambda: f64, bootstrap_value: f64) -> Vec<f64> {
     let n = rewards.len();
     let mut advantages = vec![0.0; n];
     let mut gae = 0.0;
     for t in (0..n).rev() {
-        let next_value = if t + 1 < n { values[t + 1] } else { 0.0 };
+        let next_value = if t + 1 < n { values[t + 1] } else { bootstrap_value };
         let delta = rewards[t] + gamma * next_value - values[t];
         gae = delta + gamma * lambda * gae;
         advantages[t] = gae;
@@ -988,7 +1041,7 @@ fn rollout_ppo(
     config: &TrainConfig,
     charges: &BrokerCharges,
     rng: &mut impl Rng,
-) -> (Vec<TrajectoryStep>, f64) {
+) -> (Vec<TrajectoryStep>, f64, f64) {
     let n = states.nrows().min(config.episode_steps);
     let mut position: f64 = 0.0;
     let mut entry_price = 0.0f64;
@@ -1017,6 +1070,28 @@ fn rollout_ppo(
         prev_action = action;
     }
 
+    // End-of-episode fee evasion fix: force-close any open position and subtract costs
+    if position != 0.0 && n > 0 {
+        let last_price = closes[candle_indices[start + n - 1]];
+        let close_cost = if position > 0.0 {
+            charges.cost(entry_price, last_price, position)
+        } else {
+            charges.cost(last_price, entry_price, position.abs())
+        };
+        if let Some(last_reward) = rewards.last_mut() {
+            *last_reward -= close_cost;
+        }
+        if let Some(last_step) = steps.last_mut() {
+            last_step.reward -= close_cost;
+        }
+    }
+
+    // Bootstrap GAE from the value of the final state
+    let final_row_idx = start + n - 1;
+    let final_price = closes[candle_indices[final_row_idx]];
+    let final_state = decision_state(&states.row(final_row_idx).to_vec(), position, holding, entry_price, final_price);
+    let (_, _, _, bootstrap_value) = net.forward_full_with_value(&final_state);
+
     let episode_return = match config.reward_type.as_str() {
         "sharpe" => {
             let mean = rewards.iter().sum::<f64>() / rewards.len() as f64;
@@ -1037,7 +1112,7 @@ fn rollout_ppo(
         }
         _ => rewards.iter().sum::<f64>(),
     };
-    (steps, episode_return)
+    (steps, episode_return, bootstrap_value)
 }
 
 #[derive(Clone, Debug)]
@@ -1097,6 +1172,9 @@ pub fn train_reinforce(
 
     for ep in 0..config.max_episodes {
         episodes_run = ep + 1;
+        if config.continuous_action && config.action_std_schedule {
+            net.action_std = action_std_at_step(config.action_std, ep, config.max_episodes);
+        }
         let (steps, episode_return) = rollout(&net, &train_states, closes, train_indices, config, charges, &mut rng);
         reward_ema = Some(match reward_ema {
             Some(prev) => 0.95 * prev + 0.05 * episode_return,
@@ -1202,6 +1280,7 @@ pub fn train_ppo(
     let mut iterations_since_best = 0usize;
     let mut total_episodes = 0usize;
     let mut metrics: Vec<EpisodeMetric> = vec![];
+    let mut return_normalizer = RunningNormalizer::new();
     let validation_interval = config.validation_interval.max(1);
     let ppo_epochs = config.ppo_epochs.max(1);
     let clip_epsilon = config.clip_epsilon;
@@ -1220,6 +1299,9 @@ pub fn train_ppo(
         } else {
             config.lr
         };
+        if config.continuous_action && config.action_std_schedule {
+            net.action_std = action_std_at_step(config.action_std, iteration, config.max_episodes);
+        }
 
         let mut batch_states: Vec<Vec<f64>> = vec![];
         let mut batch_actions: Vec<Action> = vec![];
@@ -1232,10 +1314,10 @@ pub fn train_ppo(
             .into_par_iter()
             .map(|_| {
                 let mut rng = rand::rng();
-                let (traj, ep_return) = rollout_ppo(&net, &train_states, closes, train_indices, config, charges, &mut rng);
+                let (traj, ep_return, bootstrap_value) = rollout_ppo(&net, &train_states, closes, train_indices, config, charges, &mut rng);
                 let traj_rewards: Vec<f64> = traj.iter().map(|t| t.reward).collect();
                 let traj_values: Vec<f64> = traj.iter().map(|t| t.value).collect();
-                let advantages = gae(&traj_rewards, &traj_values, config.gamma, gae_lambda);
+                let advantages = gae(&traj_rewards, &traj_values, config.gamma, gae_lambda, bootstrap_value);
                 let returns: Vec<f64> = advantages.iter().zip(&traj_values).map(|(a, v)| a + v).collect();
                 let steps: Vec<_> = traj.into_iter().zip(advantages.into_iter().zip(returns.into_iter())).collect();
                 (steps, ep_return)
@@ -1255,7 +1337,8 @@ pub fn train_ppo(
         }
 
         if config.reward_norm {
-            normalize_rewards(&mut batch_returns);
+            return_normalizer.update(&batch_returns);
+            return_normalizer.normalize(&mut batch_returns);
         }
 
         let adv_mean = batch_advantages.iter().sum::<f64>() / batch_advantages.len() as f64;
@@ -1264,7 +1347,7 @@ pub fn train_ppo(
 
         let train_reward = episode_returns.iter().sum::<f64>() / episode_returns.len() as f64;
 
-        let minibatch_size = (batch_states.len() / 2).max(1);
+        let minibatch_size = config.minibatch_size.max(1).min(batch_states.len());
         for _ in 0..ppo_epochs {
             let mut indices: Vec<usize> = (0..batch_states.len()).collect();
             use rand::seq::SliceRandom;
@@ -1385,12 +1468,16 @@ pub fn evaluate(
                 } else if position.signum() != action.signum() {
                     entry_price = price;
                 } else {
-                    let same_dir_pos = if position > 0.0 { position.min(action) } else { position.max(action) };
-                    let added = delta.abs();
-                    let new_size = action.abs();
-                    if new_size > 0.0 {
-                        entry_price = (entry_price * same_dir_pos.abs() + price * added) / new_size;
+                    // Same direction
+                    if action.abs() > position.abs() {
+                        let same_dir_pos = if position > 0.0 { position.min(action) } else { position.max(action) };
+                        let added = delta.abs();
+                        let new_size = action.abs();
+                        if new_size > 0.0 {
+                            entry_price = (entry_price * same_dir_pos.abs() + price * added) / new_size;
+                        }
                     }
+                    // If reducing, entry_price stays the same for remaining shares
                 }
                 position = action;
             }

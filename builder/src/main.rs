@@ -933,8 +933,10 @@ async fn process_rl_job(
         regularization_lambda,
         continuous_action,
         action_std,
+        action_std_schedule: true,
         action_penalty,
         position_deadband,
+        minibatch_size: 64,
     };
 
     let result = if training_method == "reinforce" {
