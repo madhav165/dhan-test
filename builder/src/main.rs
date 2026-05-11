@@ -787,6 +787,7 @@ async fn process_rl_job(
     let regularization_lambda = rl_config["regularization_lambda"].as_f64().unwrap_or(0.0);
     let continuous_action = rl_config["continuous_action"].as_bool().unwrap_or(false);
     let action_std = rl_config["action_std"].as_f64().unwrap_or(0.3);
+    let action_penalty = rl_config["action_penalty"].as_f64().unwrap_or(0.0);
 
     let indicator_specs: Vec<IndicatorSpec> = serde_json::from_value(
         rl_config["indicators"].clone()
@@ -926,6 +927,7 @@ async fn process_rl_job(
         regularization_lambda,
         continuous_action,
         action_std,
+        action_penalty,
     };
 
     let result = if training_method == "reinforce" {

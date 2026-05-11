@@ -33,6 +33,11 @@ export type RLConfig = {
 	reward_norm: boolean
 	lr_schedule: boolean
 	entropy_anneal: boolean
+	regularization_type: 'none' | 'l1' | 'l2'
+	regularization_lambda: number
+	continuous_action: boolean
+	action_std: number
+	action_penalty: number
 }
 
 export type FeatureImportance = {

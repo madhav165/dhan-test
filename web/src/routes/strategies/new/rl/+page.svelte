@@ -40,6 +40,11 @@
 	let reward_norm = $state(true)
 	let lr_schedule = $state(true)
 	let entropy_anneal = $state(true)
+	let regularization_type = $state<'none' | 'l1' | 'l2'>('none')
+	let regularization_lambda = $state(0.0)
+	let continuous_action = $state(false)
+	let action_std = $state(0.3)
+	let action_penalty = $state(0.0)
 
 	function fmtDate(d: Date) {
 		return d.toISOString().slice(0, 10)
@@ -113,6 +118,11 @@
 		reward_norm,
 		lr_schedule,
 		entropy_anneal,
+		regularization_type,
+		regularization_lambda,
+		continuous_action,
+		action_std,
+		action_penalty,
 	})
 
 	let split = $derived(splitPreview(train_from, train_to))
@@ -285,6 +295,40 @@
 					<input type="checkbox" bind:checked={entropy_anneal} />
 					Entropy anneal
 				</label>
+			</div>
+			<div class="arch-toggles" style="margin-top: 12px;">
+				<label class="checkbox-label">
+					<input type="checkbox" bind:checked={continuous_action} />
+					Continuous position sizing
+				</label>
+			</div>
+			{#if continuous_action}
+				<div class="param-grid" style="margin-top: 8px;">
+					<div class="param">
+						<span class="param-label">Action std</span>
+						<input type="number" min="0.05" max="1.0" step="0.05" bind:value={action_std} class="num-input" />
+					</div>
+					<div class="param">
+						<span class="param-label">Action penalty</span>
+						<input type="number" min="0" max="1.0" step="0.001" bind:value={action_penalty} class="num-input" />
+					</div>
+				</div>
+			{/if}
+			<div class="param-grid" style="margin-top: 8px;">
+				<div class="param">
+					<span class="param-label">Regularization</span>
+					<select bind:value={regularization_type} class="method-select">
+						<option value="none">None</option>
+						<option value="l1">L1</option>
+						<option value="l2">L2</option>
+					</select>
+				</div>
+				{#if regularization_type !== 'none'}
+					<div class="param">
+						<span class="param-label">Lambda</span>
+						<input type="number" min="0" max="0.1" step="0.0001" bind:value={regularization_lambda} class="num-input" />
+					</div>
+				{/if}
 			</div>
 		</div>
 	{/if}

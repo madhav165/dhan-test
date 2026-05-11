@@ -590,6 +590,7 @@ pub struct TrainConfig {
     pub regularization_lambda: f64,
     pub continuous_action: bool,
     pub action_std: f64,
+    pub action_penalty: f64,
 }
 
 impl Default for TrainConfig {
@@ -626,6 +627,7 @@ impl Default for TrainConfig {
             regularization_lambda: 0.0,
             continuous_action: false,
             action_std: 0.3,
+            action_penalty: 0.0,
         }
     }
 }
@@ -675,15 +677,25 @@ pub fn split_points(n: usize) -> (usize, usize) {
 
 fn step_reward(
     action: Action,
+    prev_action: Action,
     position: &mut f64,
     entry_price: &mut f64,
     holding: &mut usize,
     trades: &mut usize,
     price: f64,
+    prev_price: f64,
     config: &TrainConfig,
     charges: &BrokerCharges,
 ) -> f64 {
     let mut reward = 0.0;
+
+    // Reward shaping: unrealized PnL from price movement while holding position
+    reward += *position * (price - prev_price);
+
+    // Reward shaping: penalize large position changes (action smoothing)
+    if config.action_penalty > 0.0 {
+        reward -= config.action_penalty * (action - prev_action).abs();
+    }
 
     if config.continuous_action {
         let prev_pos = *position;
@@ -816,15 +828,18 @@ fn greedy_objective(
     let mut holding = 0usize;
     let mut trades = 0usize;
     let mut rewards = vec![];
+    let mut prev_action: Action = 0.0;
 
     for t in 0..n {
         let base_state = states.row(t).to_vec();
         let price = closes[candle_indices[t]];
         let state = decision_state(&base_state, position, holding, entry_price, price);
         let action = net.greedy_action(&state, config.allow_short);
+        let prev_price = if t > 0 { closes[candle_indices[t - 1]] } else { price };
 
-        let r = step_reward(action, &mut position, &mut entry_price, &mut holding, &mut trades, price, config, charges);
+        let r = step_reward(action, prev_action, &mut position, &mut entry_price, &mut holding, &mut trades, price, prev_price, config, charges);
         rewards.push(r);
+        prev_action = action;
     }
 
     match config.reward_type.as_str() {
@@ -923,6 +938,7 @@ fn rollout(
     let mut trades = 0usize;
     let mut steps = vec![];
     let mut rewards = vec![];
+    let mut prev_action: Action = 0.0;
 
     let start = if states.nrows() > n {
         rng.random_range(0..=(states.nrows() - n))
@@ -935,9 +951,11 @@ fn rollout(
         let price = closes[candle_indices[row_idx]];
         let state = decision_state(&states.row(row_idx).to_vec(), position, holding, entry_price, price);
         let (action, _) = net.sample_action(&state, rng, config.allow_short);
-        let r = step_reward(action, &mut position, &mut entry_price, &mut holding, &mut trades, price, config, charges);
+        let prev_price = if t > 0 { closes[candle_indices[row_idx - 1]] } else { price };
+        let r = step_reward(action, prev_action, &mut position, &mut entry_price, &mut holding, &mut trades, price, prev_price, config, charges);
         steps.push(Step { state, action, ret: 0.0 });
         rewards.push(r);
+        prev_action = action;
     }
 
     if position != 0.0 && n > 0 {
@@ -1032,6 +1050,7 @@ fn rollout_ppo(
     let mut trades = 0usize;
     let mut steps = vec![];
     let mut rewards = vec![];
+    let mut prev_action: Action = 0.0;
 
     let start = if states.nrows() > n {
         rng.random_range(0..=(states.nrows() - n))
@@ -1045,9 +1064,11 @@ fn rollout_ppo(
         let state = decision_state(&states.row(row_idx).to_vec(), position, holding, entry_price, price);
         let (action, log_prob) = net.sample_action(&state, rng, config.allow_short);
         let (_, _, _, value) = net.forward_full_with_value(&state);
-        let r = step_reward(action, &mut position, &mut entry_price, &mut holding, &mut trades, price, config, charges);
+        let prev_price = if t > 0 { closes[candle_indices[row_idx - 1]] } else { price };
+        let r = step_reward(action, prev_action, &mut position, &mut entry_price, &mut holding, &mut trades, price, prev_price, config, charges);
         steps.push(TrajectoryStep { state, action, log_prob, value, reward: r });
         rewards.push(r);
+        prev_action = action;
     }
 
     if position != 0.0 && n > 0 {
