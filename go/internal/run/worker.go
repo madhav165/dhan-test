@@ -2,6 +2,7 @@ package run
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -18,12 +19,13 @@ type Worker struct {
 
 func (w *Worker) Start() {
 	for {
-		w.poll()
+		w.pollRuns()
+		w.pollRLJobs()
 		time.Sleep(3 * time.Second)
 	}
 }
 
-func (w *Worker) poll() {
+func (w *Worker) pollRuns() {
 	rows, err := w.DB.Query(`
 		select j.id, j.run_id, r.interval, r.from_date::text, r.to_date::text, s.user_id::text
 		from run_jobs j
@@ -44,11 +46,36 @@ func (w *Worker) poll() {
 			log.Printf("run worker: scan error: %v", err)
 			continue
 		}
-		w.processJob(jobID, runID, interval, fromDate, toDate, userID)
+		w.processRunJob(jobID, runID, interval, fromDate, toDate, userID)
 	}
 }
 
-func (w *Worker) processJob(jobID, runID, interval, fromDate, toDate, userID string) {
+func (w *Worker) pollRLJobs() {
+	rows, err := w.DB.Query(`
+		select j.id, j.strategy_id, s.rl_config, s.user_id::text
+		from rl_jobs j
+		join strategies s on s.id = j.strategy_id
+		where j.status = 'pending'
+		order by j.created_at
+		limit 1`)
+	if err != nil {
+		log.Printf("run worker: rl query error: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var jobID, strategyID, userID string
+		var rlConfigRaw []byte
+		if err := rows.Scan(&jobID, &strategyID, &rlConfigRaw, &userID); err != nil {
+			log.Printf("run worker: rl scan error: %v", err)
+			continue
+		}
+		w.processRLJob(jobID, strategyID, rlConfigRaw, userID)
+	}
+}
+
+func (w *Worker) processRunJob(jobID, runID, interval, fromDate, toDate, userID string) {
 	instrRows, err := w.DB.Query(
 		"select security_id, exchange_segment from backtest_run_instruments where run_id = $1", runID)
 	if err != nil {
@@ -100,6 +127,57 @@ func (w *Worker) processJob(jobID, runID, interval, fromDate, toDate, userID str
 
 	w.DB.Exec("update run_jobs set status='ready', updated_at=now() where id=$1", jobID)
 	log.Printf("run worker: job %s ready", jobID)
+}
+
+func (w *Worker) processRLJob(jobID, strategyID string, rlConfigRaw []byte, userID string) {
+	var rlConfig map[string]interface{}
+	if err := json.Unmarshal(rlConfigRaw, &rlConfig); err != nil {
+		w.failRL(jobID, fmt.Sprintf("parse rl_config: %v", err))
+		return
+	}
+
+	interval, _ := rlConfig["interval"].(string)
+	trainFrom, _ := rlConfig["train_from"].(string)
+	trainTo, _ := rlConfig["train_to"].(string)
+	secID, _ := rlConfig["security_id"].(string)
+	seg, _ := rlConfig["exchange_segment"].(string)
+
+	if interval == "" || trainFrom == "" || trainTo == "" || secID == "" || seg == "" {
+		w.failRL(jobID, "missing required fields in rl_config")
+		return
+	}
+
+	clientID, accessToken, err := broker.GetToken(w.DB, w.EncKey, userID)
+	if err != nil {
+		w.failRL(jobID, fmt.Sprintf("get dhan token: %v", err))
+		return
+	}
+
+	var count int
+	w.DB.QueryRow(`
+		select count(*) from candles
+		where security_id=$1 and exchange_segment=$2 and interval=$3
+		and timestamp::date between $4::date and $5::date`,
+		secID, seg, interval, trainFrom, trainTo,
+	).Scan(&count)
+
+	if count == 0 {
+		log.Printf("run worker: fetching candles for RL %s %s %s %s–%s", secID, seg, interval, trainFrom, trainTo)
+		if err := candles.FetchAndStore(w.DB, w.DhanBaseURL, clientID, accessToken, secID, seg, interval, trainFrom, trainTo); err != nil {
+			w.failRL(jobID, fmt.Sprintf("fetch %s: %v", secID, err))
+			return
+		}
+	} else {
+		log.Printf("run worker: candles exist for RL %s %s", secID, seg)
+	}
+
+	w.DB.Exec("update rl_jobs set status='training', updated_at=now() where id=$1", jobID)
+	log.Printf("run worker: rl job %s ready for training", jobID)
+}
+
+func (w *Worker) failRL(jobID, msg string) {
+	log.Printf("run worker: rl job %s failed: %s", jobID, msg)
+	w.DB.Exec("update rl_jobs set status='failed', error=$1, updated_at=now() where id=$2", msg, jobID)
 }
 
 func (w *Worker) fail(jobID, msg string) {
