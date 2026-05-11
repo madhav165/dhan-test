@@ -333,12 +333,16 @@ fn compute_metrics(closes: &[f64], signals: &[f64], charges: &BrokerCharges) -> 
             } else if position.signum() != target.signum() {
                 entry_price = closes[i];
             } else {
-                let same_dir = if position > 0.0 { position.min(target) } else { position.max(target) };
-                let added = (target - position).abs();
-                let new_size = target.abs();
-                if new_size > 0.0 {
-                    entry_price = (entry_price * same_dir.abs() + closes[i] * added) / new_size;
+                // Same direction: only update entry_price when adding to position
+                if target.abs() > position.abs() {
+                    let same_dir = if position > 0.0 { position.min(target) } else { position.max(target) };
+                    let added = (target - position).abs();
+                    let new_size = target.abs();
+                    if new_size > 0.0 {
+                        entry_price = (entry_price * same_dir.abs() + closes[i] * added) / new_size;
+                    }
                 }
+                // If reducing, entry_price stays the same for remaining shares
             }
         }
         position = target;
