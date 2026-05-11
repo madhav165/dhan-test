@@ -36,6 +36,9 @@ scratch/
 # Superpowers
 .superpowers/
 
+# Git worktrees
+.worktrees/
+
 # Editors
 .vscode/
 .idea/

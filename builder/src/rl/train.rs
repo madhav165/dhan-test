@@ -622,10 +622,7 @@ fn compute_returns(rewards: &[f64], gamma: f64) -> Vec<f64> {
         g = rewards[i] + gamma * g;
         returns[i] = g;
     }
-    let mean = returns.iter().sum::<f64>() / returns.len() as f64;
-    let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / returns.len() as f64;
-    let std = var.sqrt().max(1e-8);
-    returns.iter().map(|r| (r - mean) / std).collect()
+    returns
 }
 
 fn lr_at_step(initial_lr: f64, step: usize, total_steps: usize) -> f64 {

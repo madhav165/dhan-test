@@ -457,7 +457,7 @@ async fn process_run_job(
     ).await.map_err(|e| e.to_string())?;
 
     let run_row = db.query_one(
-        "select r.interval, r.from_date::text, r.to_date::text, s.wasm_key, s.rl_config \
+        "select r.interval, r.from_date::text, r.to_date::text, s.wasm_key, s.rl_config, s.rule_json \
          from backtest_runs r \
          join strategies s on s.id = r.strategy_id \
          where r.id = $1",
@@ -471,7 +471,56 @@ async fn process_run_job(
     let wasm_key = wasm_key.ok_or_else(|| "strategy not compiled".to_string())?;
 
     let rl_config: serde_json::Value = run_row.get(4);
-    let lookback = rl_config["lookback_candles"].as_u64().unwrap_or(20) as usize;
+    let rule_json: Option<serde_json::Value> = run_row.get(5);
+
+    let (lookback, velocity_lookback) = if !rl_config.is_null() {
+        let lb = rl_config["lookback_candles"].as_u64().unwrap_or(20) as usize;
+        let vl = rl_config["velocity_lookback"].as_u64().map(|v| v as usize);
+        (lb, vl)
+    } else if let Some(rules) = rule_json {
+        // Manual strategy: compute lookback from indicator periods in rules
+        let mut max_period = 1usize; // minimum 1 for crosses_above/crosses_below
+        fn walk_group(group: &serde_json::Value, max: &mut usize) {
+            if let Some(items) = group["items"].as_array() {
+                for item in items {
+                    if item["type"] == "condition" {
+                        for side in ["left", "right"] {
+                            if let Some(operand) = item[side].as_object() {
+                                if operand["kind"] == "indicator" {
+                                    if let Some(ind) = operand["indicator"].as_object() {
+                                        if let Some(p) = ind["period"].as_u64() {
+                                            *max = (*max).max(p as usize);
+                                        }
+                                        if let Some(p) = ind["fast"].as_u64() {
+                                            *max = (*max).max(p as usize);
+                                        }
+                                        if let Some(p) = ind["slow"].as_u64() {
+                                            *max = (*max).max(p as usize);
+                                        }
+                                        if let Some(p) = ind["signal_period"].as_u64() {
+                                            *max = (*max).max(p as usize);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else if item["type"] == "group" {
+                        walk_group(item, max);
+                    }
+                }
+            }
+        }
+        if let Some(buy) = rules["buy"].as_object() {
+            walk_group(&serde_json::json!(buy), &mut max_period);
+        }
+        if let Some(sell) = rules["sell"].as_object() {
+            walk_group(&serde_json::json!(sell), &mut max_period);
+        }
+        (max_period, None)
+    } else {
+        (20usize, None)
+    };
+
     let mut max_period = lookback;
     if let Some(arr) = rl_config["indicators"].as_array() {
         for ind in arr {
@@ -489,7 +538,7 @@ async fn process_run_job(
             }
         }
     }
-    let warmup_needed = lookback + max_period;
+    let warmup_needed = lookback + max_period + velocity_lookback.unwrap_or(0);
     let buffer_days = (warmup_needed as f64 * 1.5).ceil() as i64;
     let fetch_from = chrono::NaiveDate::parse_from_str(&from_date, "%Y-%m-%d")
         .map_err(|e| e.to_string())?
@@ -817,7 +866,26 @@ async fn process_rl_job(
     let train_to: String = rl_config["train_to"].as_str().unwrap_or("").to_string();
     let external_test_from: Option<String> = rl_config["test_from"].as_str().map(|s| s.to_string());
     let external_test_to: Option<String> = rl_config["test_to"].as_str().map(|s| s.to_string());
-    let lookback = rl_config["lookback_candles"].as_u64().unwrap_or(20) as usize;
+
+    // State mode: explicit toggle between architectures
+    let state_mode = rl_config["state_mode"].as_str().unwrap_or("hybrid");
+    let (lookback, velocity_lookback) = match state_mode {
+        "baseline" => {
+            eprintln!("state_mode=baseline: no velocity, OHLCV lags enabled");
+            (rl_config["lookback_candles"].as_u64().unwrap_or(20) as usize, None)
+        }
+        "lean" => {
+            eprintln!("state_mode=lean: velocity ON, OHLCV lags OFF (lookback=0)");
+            let vl = rl_config["velocity_lookback"].as_u64().map(|v| v as usize).unwrap_or(5);
+            (0usize, Some(vl))
+        }
+        _ => { // "hybrid" or anything else
+            eprintln!("state_mode=hybrid: velocity ON, OHLCV lags ON");
+            let lb = rl_config["lookback_candles"].as_u64().unwrap_or(20) as usize;
+            let vl = rl_config["velocity_lookback"].as_u64().map(|v| v as usize).unwrap_or(5);
+            (lb, Some(vl))
+        }
+    };
     let allow_short = rl_config["allow_short"].as_bool().unwrap_or(false);
     let reward_type = rl_config["reward"].as_str().unwrap_or("pnl").to_string();
     let training_method = rl_config["training_method"].as_str().unwrap_or("ppo").to_string();
@@ -846,6 +914,28 @@ async fn process_rl_job(
     let indicator_specs: Vec<IndicatorSpec> = serde_json::from_value(
         rl_config["indicators"].clone()
     ).map_err(|e| e.to_string())?;
+
+    let mut max_period = lookback;
+    for spec in &indicator_specs {
+        match spec {
+            IndicatorSpec::Rsi { period } |
+            IndicatorSpec::Sma { period } |
+            IndicatorSpec::Ema { period } |
+            IndicatorSpec::Wma { period } |
+            IndicatorSpec::Bb { period, .. } |
+            IndicatorSpec::Atr { period } |
+            IndicatorSpec::Stoch { period } |
+            IndicatorSpec::Cci { period } => {
+                max_period = max_period.max(*period);
+            }
+            IndicatorSpec::Macd { fast, slow, signal_period, .. } => {
+                max_period = max_period.max(*fast).max(*slow).max(*signal_period);
+            }
+            _ => {}
+        }
+    }
+    let warmup_needed = lookback + max_period + velocity_lookback.unwrap_or(0);
+    let buffer_days = (warmup_needed as f64 * 1.5).ceil() as i64;
 
     let mut penalty_holding = None;
     let mut max_holding_days = None;
@@ -929,7 +1019,12 @@ async fn process_rl_job(
             .unwrap_or_else(|| "".to_string())
     };
 
-    let train_rows = fetch_candles(&train_from, &train_to).await?;
+    let train_fetch_from = chrono::NaiveDate::parse_from_str(&train_from, "%Y-%m-%d")
+        .map_err(|e| e.to_string())?
+        .checked_sub_signed(chrono::Duration::days(buffer_days))
+        .ok_or("invalid train_from")?;
+    let train_fetch_from_str = train_fetch_from.format("%Y-%m-%d").to_string();
+    let train_rows = fetch_candles(&train_fetch_from_str, &train_to).await?;
     if train_rows.is_empty() {
         return Err(format!("No daily candles found for {} {} in {} to {}", security_id, exchange_segment, train_from, train_to));
     }
@@ -937,7 +1032,7 @@ async fn process_rl_job(
     let train_candles = to_candles(train_rows);
 
     let raw_indicator_series = compute_indicators(&train_candles, &indicator_specs);
-    let indicator_series = stationary_transform(&train_candles, &raw_indicator_series);
+    let indicator_series = stationary_transform(&train_candles, &raw_indicator_series, velocity_lookback);
     let (raw_states, mut feature_names, candle_indices) = build_state_matrix_with_indices(&train_candles, &indicator_series, lookback);
     if raw_states.nrows() == 0 {
         return Err(format!("Not enough usable candles after indicator warmup for {} {} in {} to {}", security_id, exchange_segment, train_from, train_to));
@@ -1000,13 +1095,18 @@ async fn process_rl_job(
         train_ppo(&states, &train_candles.closes, &candle_indices, &day_boundaries, is_day_interval, &cfg, &charges)
     };
     let external_test_pnl: Option<f64> = if let (Some(ref tf), Some(ref tt)) = (&external_test_from, &external_test_to) {
-        let test_rows = fetch_candles(tf, tt).await?;
+        let test_fetch_from = chrono::NaiveDate::parse_from_str(tf, "%Y-%m-%d")
+            .map_err(|e| e.to_string())?
+            .checked_sub_signed(chrono::Duration::days(buffer_days))
+            .ok_or("invalid test_from")?;
+        let test_fetch_from_str = test_fetch_from.format("%Y-%m-%d").to_string();
+        let test_rows = fetch_candles(&test_fetch_from_str, tt).await?;
         if test_rows.is_empty() {
             None
         } else {
             let test_candles = to_candles(test_rows);
             let raw_test_ind = compute_indicators(&test_candles, &indicator_specs);
-            let test_ind = stationary_transform(&test_candles, &raw_test_ind);
+            let test_ind = stationary_transform(&test_candles, &raw_test_ind, velocity_lookback);
             let (mut test_states, _, test_indices) = build_state_matrix_with_indices(&test_candles, &test_ind, lookback);
             apply_normalisation_stats(&mut test_states, &means, &stds)?;
             if test_states.nrows() == 0 {
@@ -1040,7 +1140,7 @@ async fn process_rl_job(
 
     let approx_rules = distil(&result.actor, &train_states_for_explain, &feature_names, 3);
 
-    let feature_codegen = codegen_transforms(&indicator_specs);
+    let feature_codegen = codegen_transforms(&indicator_specs, velocity_lookback);
     let rust_snippet = net_to_rust(
         &result.actor, &feature_codegen, lookback, &means, &stds, allow_short,
     );

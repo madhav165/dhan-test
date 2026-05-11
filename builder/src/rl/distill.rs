@@ -4,15 +4,37 @@ use crate::rl::features::IndicatorSpec;
 
 /// Code generation descriptor for a transformed feature.
 /// The `expr` is a Rust expression string that evaluates to the feature value at index `i`.
+#[derive(Clone)]
 pub struct FeatureCodegen {
     #[allow(dead_code)]
     pub name: String,
     pub expr: String,
 }
 
+/// Replace standalone identifier `i` with `replacement` in a Rust expression string.
+fn replace_index(expr: &str, replacement: &str) -> String {
+    // Simple token-based replacement: "i" surrounded by non-ident chars
+    let mut result = String::with_capacity(expr.len() + replacement.len() * 4);
+    let mut chars = expr.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == 'i' {
+            let prev_ok = result.is_empty() || !result.ends_with(|ch: char| ch.is_alphanumeric() || ch == '_');
+            let next_ok = chars.peek().map(|&ch| !ch.is_alphanumeric() && ch != '_').unwrap_or(true);
+            if prev_ok && next_ok {
+                result.push_str(replacement);
+                continue;
+            }
+        }
+        result.push(c);
+    }
+    result
+}
+
 /// Generate Rust expressions for stationary-transformed features.
 /// This MUST match the logic in `features::stationary_transform` exactly.
-pub fn codegen_transforms(specs: &[IndicatorSpec]) -> Vec<FeatureCodegen> {
+/// When `velocity_lookback` is Some(v), also generates velocity (1st derivative)
+/// features for every stationary indicator.
+pub fn codegen_transforms(specs: &[IndicatorSpec], velocity_lookback: Option<usize>) -> Vec<FeatureCodegen> {
     use std::collections::HashMap;
     let mut out = vec![];
 
@@ -83,6 +105,22 @@ pub fn codegen_transforms(specs: &[IndicatorSpec]) -> Vec<FeatureCodegen> {
             }
         }
     }
+
+    // Option C: velocity features — explicitly hand the network the 1st derivative.
+    if let Some(v) = velocity_lookback {
+        let base_features = out.clone();
+        for feat in base_features {
+            let prev_expr = replace_index(&feat.expr, &format!("(i - {})", v));
+            out.push(FeatureCodegen {
+                name: format!("{}_velocity", feat.name),
+                expr: format!(
+                    "{{ let curr = {}; if i < {} {{ f64::NAN }} else {{ let prev = {}; curr - prev }} }}",
+                    feat.expr, v, prev_expr
+                ),
+            });
+        }
+    }
+
     out
 }
 

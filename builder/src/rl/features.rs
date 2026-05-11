@@ -99,11 +99,24 @@ pub fn compute_indicators(candles: &Candles, specs: &[IndicatorSpec]) -> Vec<(St
     out
 }
 
+/// Compute velocity (rate of change) over a lookback window.
+fn compute_velocity(series: &[f64], lookback: usize) -> Vec<f64> {
+    let n = series.len();
+    let mut velocity = vec![f64::NAN; n];
+    for i in lookback..n {
+        velocity[i] = series[i] - series[i - lookback];
+    }
+    velocity
+}
+
 /// Apply stationary transformations to raw indicator series.
 /// This makes features regime-independent and bounded, which is critical for RL.
+/// When `velocity_lookback` is Some(v), appends velocity features for each stationary
+/// indicator — explicitly handing the network the 1st derivative (momentum).
 pub fn stationary_transform(
     candles: &Candles,
     raw_indicators: &[(String, Vec<f64>)],
+    velocity_lookback: Option<usize>,
 ) -> Vec<(String, Vec<f64>)> {
     use std::collections::HashMap;
 
@@ -199,6 +212,16 @@ pub fn stationary_transform(
             })
             .collect();
         result.push((format!("bb_{}_percent_b", period), percent_b));
+    }
+
+    // Option C: Append velocity (1st derivative) for every stationary feature.
+    // This gives the network trend direction for free without historical lags.
+    if let Some(v) = velocity_lookback {
+        let base_features: Vec<(String, Vec<f64>)> = result.clone();
+        for (name, series) in base_features {
+            let velocity = compute_velocity(&series, v);
+            result.push((format!("{}_velocity", name), velocity));
+        }
     }
 
     result
