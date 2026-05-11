@@ -539,6 +539,8 @@ pub struct TrainConfig {
     pub min_delta: f64,
     pub grad_clip_norm: f64,
     pub lr: f64,
+    pub actor_lr: f64,
+    pub critic_lr: f64,
     pub gamma: f64,
     pub allow_short: bool,
     pub reward_type: String,
@@ -578,6 +580,8 @@ impl Default for TrainConfig {
             min_delta: 1e-6,
             grad_clip_norm: 1.0,
             lr: 1e-4,
+            actor_lr: 1e-4,
+            critic_lr: 1e-3,
             gamma: 0.99,
             allow_short: false,
             reward_type: "pnl".into(),
@@ -1220,12 +1224,12 @@ pub fn train_reinforce(
         actor.net.add_regularization(&mut grads, &config.regularization_type, config.regularization_lambda);
         grads.clip_global_norm(config.grad_clip_norm);
 
-        let lr = if config.lr_schedule {
-            lr_at_step(config.lr, ep, config.max_episodes)
+        let actor_lr = if config.lr_schedule {
+            lr_at_step(config.actor_lr, ep, config.max_episodes)
         } else {
-            config.lr
+            config.actor_lr
         };
-        actor.net.apply_adam(&grads, &mut m, &mut v, ep + 1, lr);
+        actor.net.apply_adam(&grads, &mut m, &mut v, ep + 1, actor_lr);
 
         eprintln!("rl reinforce: episode {}/{} return={:.4}", ep, config.max_episodes, final_train_reward);
 
@@ -1318,10 +1322,15 @@ pub fn train_ppo(
         } else {
             config.entropy_coef
         };
-        let current_lr = if config.lr_schedule {
-            lr_at_step(config.lr, iteration, config.max_episodes)
+        let current_actor_lr = if config.lr_schedule {
+            lr_at_step(config.actor_lr, iteration, config.max_episodes)
         } else {
-            config.lr
+            config.actor_lr
+        };
+        let current_critic_lr = if config.lr_schedule {
+            lr_at_step(config.critic_lr, iteration, config.max_episodes)
+        } else {
+            config.critic_lr
         };
         if config.continuous_action && config.action_std_schedule {
             actor.action_std = action_std_at_step(config.action_std, iteration, config.max_episodes);
@@ -1404,7 +1413,7 @@ pub fn train_ppo(
                 scale!(actor_grads.w_out); scale!(actor_grads.b_out);
                 actor.net.add_regularization(&mut actor_grads, &config.regularization_type, config.regularization_lambda);
                 actor_grads.clip_global_norm(config.grad_clip_norm);
-                actor.net.apply_adam(&actor_grads, &mut actor_m, &mut actor_v, iteration + 1, current_lr);
+                actor.net.apply_adam(&actor_grads, &mut actor_m, &mut actor_v, iteration + 1, current_actor_lr);
 
                 for w in &mut critic_grads.layer_weights {
                     for x in w.iter_mut() { *x /= n; }
@@ -1415,7 +1424,7 @@ pub fn train_ppo(
                 scale!(critic_grads.w_out); scale!(critic_grads.b_out);
                 critic.net.add_regularization(&mut critic_grads, &config.regularization_type, config.regularization_lambda);
                 critic_grads.clip_global_norm(config.grad_clip_norm);
-                critic.net.apply_adam(&critic_grads, &mut critic_m, &mut critic_v, iteration + 1, current_lr);
+                critic.net.apply_adam(&critic_grads, &mut critic_m, &mut critic_v, iteration + 1, current_critic_lr);
             }
         }
 
