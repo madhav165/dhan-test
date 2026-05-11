@@ -1,11 +1,15 @@
 use ndarray::Array2;
-use crate::rl::train::MLP;
+use crate::rl::train::{MLP, Activation};
 use crate::rl::features::IndicatorSpec;
 
 fn dominant_logit(net: &MLP, x: &[f64]) -> f64 {
     let (_, _, probs) = net.forward_full(x);
-    // buy prob minus hold prob as signal strength
-    probs[1] - probs[0]
+    if net.continuous_action {
+        probs[0] // mean
+    } else {
+        // buy prob minus hold prob as signal strength
+        probs[1] - probs[0]
+    }
 }
 
 pub fn feature_importance(net: &MLP, states: &Array2<f64>) -> Vec<f64> {
@@ -156,11 +160,10 @@ pub fn net_to_rust(
 
     lines.push(format!("    if i < {} {{ return 0; }}", lookback));
 
-    // Embed weights and normalization stats
-    lines.push(format!("    let w1: &[f64] = {};", fmt_slice(&net.w1)));
-    lines.push(format!("    let b1: &[f64] = {};", fmt_slice(&net.b1)));
-    lines.push(format!("    let w2: &[f64] = {};", fmt_slice(&net.w2)));
-    lines.push(format!("    let b2: &[f64] = {};", fmt_slice(&net.b2)));
+    for (idx, (w, b)) in net.layers.iter().enumerate() {
+        lines.push(format!("    let w{}: &[f64] = {};", idx, fmt_slice(w)));
+        lines.push(format!("    let b{}: &[f64] = {};", idx, fmt_slice(b)));
+    }
     lines.push(format!("    let w_out: &[f64] = {};", fmt_slice(&net.w_out)));
     lines.push(format!("    let b_out: &[f64] = {};", fmt_slice(&net.b_out)));
     lines.push(format!("    let means: &[f64] = {};", fmt_slice(means)));
@@ -168,7 +171,6 @@ pub fn net_to_rust(
     lines.push(format!("    let hidden = {};", net.hidden_size));
     lines.push(format!("    let input = {};", net.input_size));
 
-    // Build and normalize feature vector — same ordering as build_state_matrix
     lines.push(format!("    let mut feat = vec![0.0_f64; {}];", state_dim));
     for (idx, spec) in indicator_specs.iter().enumerate() {
         let expr = indicator_expr(spec);
@@ -179,7 +181,6 @@ pub fn net_to_rust(
     lines.push(format!("    let mut off = {};", num_inds));
     lines.push(format!("    for lag in 1_usize..={} {{", lookback));
     lines.push("        let t = i - lag;".into());
-    // Use close as a fallback for older WASM callers that do not provide opens.
     lines.push("        let open = if opens.len() > t { opens[t] } else { prices[t] };".into());
     lines.push("        let raw = [open, highs[t], lows[t], prices[t], volumes[t]];".into());
     lines.push("        for k in 0..5_usize { feat[off+k] = (raw[k] - means[off+k]) / stds[off+k]; }".into());
@@ -189,20 +190,33 @@ pub fn net_to_rust(
     lines.push("    feat[off + 1] = norm_holding;".into());
     lines.push("    feat[off + 2] = norm_unrealized;".into());
 
-    // Forward pass: input -> tanh -> tanh -> softmax
-    lines.push("    let mm = |w: &[f64], x: &[f64], r: usize, c: usize| -> Vec<f64> { (0..r).map(|i| (0..c).map(|j| w[i*c+j]*x[j]).sum::<f64>()).collect() };".into());
-    lines.push("    let h1: Vec<f64> = mm(w1,&feat,hidden,input).into_iter().zip(b1).map(|(v,b)| (v+b).tanh()).collect();".into());
-    lines.push("    let h2: Vec<f64> = mm(w2,&h1,hidden,hidden).into_iter().zip(b2).map(|(v,b)| (v+b).tanh()).collect();".into());
-    lines.push("    let lo: Vec<f64> = mm(w_out,&h2,3,hidden).into_iter().zip(b_out).map(|(v,b)| v+b).collect();".into());
-    lines.push("    let mx = lo.iter().cloned().fold(f64::NEG_INFINITY, f64::max);".into());
-    lines.push("    let ex: Vec<f64> = lo.iter().map(|v| (v-mx).exp()).collect();".into());
-    lines.push("    let s: f64 = ex.iter().sum();".into());
-    lines.push("    let p = [ex[0]/s, ex[1]/s, ex[2]/s];".into());
+    let act = match net.activation {
+        Activation::Tanh => "tanh()",
+        Activation::Relu => "max(0.0)",
+    };
 
-    if allow_short {
-        lines.push("    if p[1] >= p[0] && p[1] >= p[2] { 1u8 } else if p[2] >= p[0] { 2u8 } else { 0u8 }".into());
+    lines.push("    let mm = |w: &[f64], x: &[f64], r: usize, c: usize| -> Vec<f64> { (0..r).map(|i| (0..c).map(|j| w[i*c+j]*x[j]).sum::<f64>()).collect() };".into());
+    lines.push("    let mut h = feat;".into());
+    for (idx, _) in net.layers.iter().enumerate() {
+        let prev = if idx == 0 { "input" } else { "hidden" };
+        lines.push(format!(
+            "    h = mm(w{idx},&h,hidden,{prev}).into_iter().zip(b{idx}).map(|(v,b)| (v+b).{act}).collect();"
+        ));
+    }
+    if net.continuous_action {
+        lines.push("    mm(w_out,&h,1,hidden).into_iter().zip(b_out).map(|(v,b)| (v+b).tanh()).next().unwrap()".into());
     } else {
-        lines.push("    if p[1] >= p[0] { 1u8 } else { 0u8 }".into());
+        lines.push("    let lo: Vec<f64> = mm(w_out,&h,3,hidden).into_iter().zip(b_out).map(|(v,b)| v+b).collect();".into());
+        lines.push("    let mx = lo.iter().cloned().fold(f64::NEG_INFINITY, f64::max);".into());
+        lines.push("    let ex: Vec<f64> = lo.iter().map(|v| (v-mx).exp()).collect();".into());
+        lines.push("    let s: f64 = ex.iter().sum();".into());
+        lines.push("    let p = [ex[0]/s, ex[1]/s, ex[2]/s];".into());
+
+        if allow_short {
+            lines.push("    if p[1] >= p[0] && p[1] >= p[2] { 1.0 } else if p[2] >= p[0] { -1.0 } else { 0.0 }".into());
+        } else {
+            lines.push("    if p[1] >= p[0] { 1.0 } else { 0.0 }".into());
+        }
     }
 
     lines.join("\n")

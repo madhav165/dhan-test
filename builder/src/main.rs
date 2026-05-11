@@ -14,7 +14,7 @@ use tokio_postgres::NoTls;
 use aws_sdk_s3::{Client as S3Client, config::Builder as S3Builder, config::BehaviorVersion};
 use aws_credential_types::Credentials;
 use aws_config::Region;
-use arrow::array::{Float64Array, Int64Array, StringArray, UInt8Array};
+use arrow::array::{Float64Array, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
@@ -39,7 +39,7 @@ struct State {
     volumes: Vec<f64>,
     highs: Vec<f64>,
     lows: Vec<f64>,
-    signals: Vec<u8>,
+    signals: Vec<f64>,
 }
 struct WasmState(UnsafeCell<State>);
 unsafe impl Sync for WasmState {}
@@ -89,53 +89,67 @@ pub extern "C" fn alloc_low(len: u32) -> *mut f64 {
 }
 
 #[no_mangle]
-pub extern "C" fn run(len: u32) -> *mut u8 {
+pub extern "C" fn run(len: u32) -> *mut f64 {
     let s = unsafe { &mut *STATE.0.get() };
     let n = len as usize;
-    s.signals = vec![0u8; n];
+    s.signals = vec![0.0; n];
     if n < 2 { return s.signals.as_mut_ptr(); }
     let prices = &s.prices[..n];
     let opens = &s.opens[..s.opens.len().min(n)];
     let volumes = &s.volumes[..s.volumes.len().min(n)];
     let highs = &s.highs[..s.highs.len().min(n)];
     let lows = &s.lows[..s.lows.len().min(n)];
-    let mut position: i8 = 0;
+    let mut position: f64 = 0.0;
     let mut entry_price = 0.0_f64;
     let mut holding = 0_usize;
-    let mut prev_sig = 0u8;
+    let mut prev_target: f64 = 0.0;
     for i in 1..n {
         let price = prices[i];
-        let unrealized_pnl = match position {
-            1 => price - entry_price,
-            -1 => entry_price - price,
-            _ => 0.0,
+        let unrealized_pnl = if position > 0.0 {
+            position * (price - entry_price)
+        } else if position < 0.0 {
+            position.abs() * (entry_price - price)
+        } else {
+            0.0
         };
-        let norm_position = position as f64 * 0.5;
+        let norm_position = position;
         let norm_holding = (holding as f64 / 20.0).clamp(-5.0, 5.0);
         let norm_unrealized = (unrealized_pnl / entry_price.max(1e-8)).clamp(-5.0, 5.0);
-        let raw_sig = signal(prices, opens, volumes, highs, lows, i, norm_position, norm_holding, norm_unrealized);
-        let sig = if raw_sig == 255 { prev_sig } else { raw_sig as u8 };
-        s.signals[i] = sig;
-        match (position, sig) {
-            (0, 1) => { position = 1; entry_price = price; holding = 0; }
-            (0, 2) => { position = -1; entry_price = price; holding = 0; }
-            (1, 0) | (1, 2) => {
-                position = 0; holding = 0;
-                if sig == 2 { position = -1; entry_price = price; }
+        let target = signal(prices, opens, volumes, highs, lows, i, norm_position, norm_holding, norm_unrealized);
+        let target = if target.is_nan() { prev_target } else { target.clamp(-1.0, 1.0) };
+        s.signals[i] = target;
+
+        if target != position {
+            if position > 0.0 && target < position {
+                let closed = position - target.max(0.0);
+                let _ = closed * (price - entry_price);
+            } else if position < 0.0 && target > position {
+                let closed = position.abs() - target.min(0.0).abs();
+                let _ = closed * (entry_price - price);
             }
-            (-1, 0) | (-1, 1) => {
-                position = 0; holding = 0;
-                if sig == 1 { position = 1; entry_price = price; }
+            if target == 0.0 {
+                entry_price = 0.0;
+            } else if position == 0.0 {
+                entry_price = price;
+            } else if position.signum() != target.signum() {
+                entry_price = price;
+            } else {
+                let same_dir = if position > 0.0 { position.min(target) } else { position.max(target) };
+                let added = (target - position).abs();
+                let new_size = target.abs();
+                if new_size > 0.0 {
+                    entry_price = (entry_price * same_dir.abs() + price * added) / new_size;
+                }
             }
-            _ => {}
         }
-        if position != 0 { holding += 1; }
-        prev_sig = sig;
+        position = target;
+        holding = if position != 0.0 { holding + 1 } else { 0 };
+        prev_target = target;
     }
     s.signals.as_mut_ptr()
 }
 
-fn signal(prices: &[f64], opens: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64], i: usize, norm_position: f64, norm_holding: f64, norm_unrealized: f64) -> u8 {
+fn signal(prices: &[f64], opens: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64], i: usize, norm_position: f64, norm_holding: f64, norm_unrealized: f64) -> f64 {
     // USER CODE
 }
 "#;
@@ -183,7 +197,7 @@ async fn download(s3: &S3Client, bucket: &str, key: &str) -> Result<Vec<u8>, Str
     Ok(bytes.to_vec())
 }
 
-fn run_wasm(wasm: &[u8], closes: &[f64], opens: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64]) -> Result<Vec<u8>, String> {
+fn run_wasm(wasm: &[u8], closes: &[f64], opens: &[f64], volumes: &[f64], highs: &[f64], lows: &[f64]) -> Result<Vec<f64>, String> {
     use wasmtime::{Engine, Linker, Module, Store};
 
     let engine = Engine::default();
@@ -222,9 +236,17 @@ fn run_wasm(wasm: &[u8], closes: &[f64], opens: &[f64], volumes: &[f64], highs: 
 
     let sig_ptr = run_fn.call(&mut store, len).map_err(|e| e.to_string())?;
 
-    let signals = {
+    let signals: Vec<f64> = {
         let data = memory.data(&store);
-        data[sig_ptr as usize..sig_ptr as usize + len as usize].to_vec()
+        (0..len as usize)
+            .map(|i| {
+                let off = sig_ptr as usize + i * 8;
+                f64::from_le_bytes([
+                    data[off], data[off + 1], data[off + 2], data[off + 3],
+                    data[off + 4], data[off + 5], data[off + 6], data[off + 7],
+                ])
+            })
+            .collect()
     };
 
     Ok(signals)
@@ -262,18 +284,18 @@ impl BrokerCharges {
     }
 }
 
-fn compute_metrics(closes: &[f64], signals: &[u8], charges: &BrokerCharges) -> Metrics {
+fn compute_metrics(closes: &[f64], signals: &[f64], charges: &BrokerCharges) -> Metrics {
     let mut num_trades = 0i32;
     let mut wins = 0i32;
     let mut total_pnl = 0.0f64;
-    // (entry_price, is_long)
-    let mut entry: Option<(f64, bool)> = None;
+    let mut entry_price = 0.0f64;
+    let mut position: f64 = 0.0;
     let mut cum_pnl = 0.0f64;
     let mut peak = 0.0f64;
     let mut max_drawdown = 0.0f64;
 
-    let mut record = |gross_pnl: f64, buy_price: f64, sell_price: f64| {
-        let cost = charges.cost(buy_price, sell_price);
+    let mut record = |gross_pnl: f64, buy_price: f64, sell_price: f64, size: f64| {
+        let cost = charges.cost(buy_price, sell_price) * size;
         let pnl = gross_pnl - cost;
         total_pnl += pnl;
         num_trades += 1;
@@ -284,35 +306,45 @@ fn compute_metrics(closes: &[f64], signals: &[u8], charges: &BrokerCharges) -> M
         if dd > max_drawdown { max_drawdown = dd; }
     };
 
-    let mut prev_sig = 0u8;
-    for (i, &sig) in signals.iter().enumerate() {
-        if sig == prev_sig { prev_sig = sig; continue; }
-        // close existing position on any transition away from it
-        if let Some((e, prev_long)) = entry.take() {
-            if sig == 0 || (sig == 2 && prev_long) || (sig == 1 && !prev_long) {
-                let (gross, buy_p, sell_p) = if prev_long {
-                    (closes[i] - e, e, closes[i])
-                } else {
-                    (e - closes[i], closes[i], e)
-                };
-                record(gross, buy_p, sell_p);
+    let mut prev_target: f64 = 0.0;
+    for (i, &target) in signals.iter().enumerate() {
+        let target = target.clamp(-1.0, 1.0);
+        if target == prev_target { prev_target = target; continue; }
+
+        if target != position {
+            if position > 0.0 && target < position {
+                let closed = position - target.max(0.0);
+                record(closed * (closes[i] - entry_price), entry_price, closes[i], closed);
+            } else if position < 0.0 && target > position {
+                let closed = position.abs() - target.min(0.0).abs();
+                record(closed * (entry_price - closes[i]), closes[i], entry_price, closed);
+            }
+            if target == 0.0 {
+                entry_price = 0.0;
+            } else if position == 0.0 {
+                entry_price = closes[i];
+            } else if position.signum() != target.signum() {
+                entry_price = closes[i];
+            } else {
+                let same_dir = if position > 0.0 { position.min(target) } else { position.max(target) };
+                let added = (target - position).abs();
+                let new_size = target.abs();
+                if new_size > 0.0 {
+                    entry_price = (entry_price * same_dir.abs() + closes[i] * added) / new_size;
+                }
             }
         }
-        // open new position on buy or sell signal
-        if sig == 1 || sig == 2 {
-            entry = Some((closes[i], sig == 1));
-        }
-        prev_sig = sig;
+        position = target;
+        prev_target = target;
     }
 
-    if let Some((e, is_long)) = entry {
+    if position != 0.0 {
         if let Some(&last) = closes.last() {
-            let (gross, buy_p, sell_p) = if is_long {
-                (last - e, e, last)
+            if position > 0.0 {
+                record(position * (last - entry_price), entry_price, last, position);
             } else {
-                (e - last, last, e)
-            };
-            record(gross, buy_p, sell_p);
+                record(position.abs() * (entry_price - last), last, entry_price, position.abs());
+            }
         }
     }
 
@@ -329,7 +361,7 @@ fn build_parquet(
     lows: &[f64],
     closes: &[f64],
     volumes: &[i64],
-    signals: &[u8],
+    signals: &[f64],
 ) -> Result<Vec<u8>, String> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("security_id", DataType::Utf8, false),
@@ -340,7 +372,7 @@ fn build_parquet(
         Field::new("low", DataType::Float64, false),
         Field::new("close", DataType::Float64, false),
         Field::new("volume", DataType::Int64, false),
-        Field::new("signal", DataType::UInt8, false),
+        Field::new("signal", DataType::Float64, false),
     ]));
 
     let batch = RecordBatch::try_new(schema.clone(), vec![
@@ -352,7 +384,7 @@ fn build_parquet(
         Arc::new(Float64Array::from(lows.to_vec())),
         Arc::new(Float64Array::from(closes.to_vec())),
         Arc::new(Int64Array::from(volumes.to_vec())),
-        Arc::new(UInt8Array::from(signals.to_vec())),
+        Arc::new(Float64Array::from(signals.to_vec())),
     ]).map_err(|e| e.to_string())?;
 
     let mut buf = Vec::new();
@@ -514,7 +546,7 @@ async fn process_run_job(
         lows: Vec<f64>,
         closes: Vec<f64>,
         volumes: Vec<i64>,
-        signals: Vec<u8>,
+        signals: Vec<f64>,
         metrics: Metrics,
     }
 
@@ -552,7 +584,7 @@ async fn process_run_job(
     let mut col_low: Vec<f64> = vec![];
     let mut col_close: Vec<f64> = vec![];
     let mut col_vol: Vec<i64> = vec![];
-    let mut col_sig: Vec<u8> = vec![];
+    let mut col_sig: Vec<f64> = vec![];
     let mut total_trades = 0i32;
     let mut total_wins = 0i32;
     let mut total_pnl = 0.0f64;
@@ -568,7 +600,7 @@ async fn process_run_job(
 
         let key = format!("{}:{}", r.security_id, r.exchange_segment);
         let entries: Vec<serde_json::Value> = r.timestamps.iter().zip(r.signals.iter())
-            .filter(|(_, &sig)| sig != 0)
+            .filter(|(_, &sig)| sig != 0.0)
             .map(|(&ts, &sig)| serde_json::json!({"ts": ts, "sig": sig}))
             .collect();
         if !entries.is_empty() {
@@ -746,6 +778,15 @@ async fn process_rl_job(
     let gae_lambda = rl_config["gae_lambda"].as_f64().unwrap_or(0.95);
     let batch_episodes = rl_config["batch_episodes"].as_u64().unwrap_or(8) as usize;
     let hidden_size = rl_config["hidden_size"].as_u64().unwrap_or(64) as usize;
+    let num_layers = rl_config["num_layers"].as_u64().unwrap_or(2) as usize;
+    let activation = rl_config["activation"].as_str().unwrap_or("relu").to_string();
+    let reward_norm = rl_config["reward_norm"].as_bool().unwrap_or(true);
+    let lr_schedule = rl_config["lr_schedule"].as_bool().unwrap_or(true);
+    let entropy_anneal = rl_config["entropy_anneal"].as_bool().unwrap_or(true);
+    let regularization_type = rl_config["regularization_type"].as_str().unwrap_or("none").to_string();
+    let regularization_lambda = rl_config["regularization_lambda"].as_f64().unwrap_or(0.0);
+    let continuous_action = rl_config["continuous_action"].as_bool().unwrap_or(false);
+    let action_std = rl_config["action_std"].as_f64().unwrap_or(0.3);
 
     let indicator_specs: Vec<IndicatorSpec> = serde_json::from_value(
         rl_config["indicators"].clone()
@@ -876,6 +917,15 @@ async fn process_rl_job(
         gae_lambda,
         batch_episodes,
         hidden_size,
+        num_layers,
+        activation,
+        reward_norm,
+        lr_schedule,
+        entropy_anneal,
+        regularization_type,
+        regularization_lambda,
+        continuous_action,
+        action_std,
     };
 
     let result = if training_method == "reinforce" {

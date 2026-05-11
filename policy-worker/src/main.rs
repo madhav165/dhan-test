@@ -47,7 +47,7 @@ struct WasmRunner {
     instance: Instance,
     /// length of closed-candle history; total alloc is history_len + 1
     history_len: usize,
-    last_signal: u8,
+    last_position: f64,
     price_ptr: u32,
     open_ptr: Option<u32>,
     volume_ptr: Option<u32>,
@@ -111,7 +111,7 @@ impl WasmRunner {
             store,
             instance,
             history_len: n,
-            last_signal: 0,
+            last_position: 0.0,
             price_ptr: ptr,
             open_ptr,
             volume_ptr,
@@ -120,7 +120,15 @@ impl WasmRunner {
         })
     }
 
+    fn read_f64_at(data: &[u8], off: usize) -> f64 {
+        f64::from_le_bytes([
+            data[off], data[off + 1], data[off + 2], data[off + 3],
+            data[off + 4], data[off + 5], data[off + 6], data[off + 7],
+        ])
+    }
+
     /// Update the live price+volume+high+low slot and run signal. Returns Some(signal) on transition.
+    /// Signal: 1 = long (BUY), 2 = short (SELL)
     fn tick(&mut self, ltp: f64, vol: f64, high: f64, low: f64) -> Result<Option<u8>, String> {
         let memory = self.instance.get_memory(&mut self.store, "memory")
             .ok_or("no memory")?;
@@ -150,19 +158,21 @@ impl WasmRunner {
             .map_err(|e| e.to_string())?;
         let sig_ptr = run_fn.call(&mut self.store, total).map_err(|e| e.to_string())?;
 
-        let signal = {
+        let position = {
             let data = memory.data(&self.store);
-            data[sig_ptr as usize + self.history_len]
+            Self::read_f64_at(data, sig_ptr as usize + self.history_len * 8)
         };
 
-        if signal != self.last_signal {
-            let prev = self.last_signal;
-            self.last_signal = signal;
-            if signal != 0 {
-                return Ok(Some(signal));
+        let prev = self.last_position;
+        if (position > 0.0 && prev <= 0.0) || (position < 0.0 && prev >= 0.0) {
+            self.last_position = position;
+            if position > 0.0 {
+                return Ok(Some(1)); // BUY / LONG
+            } else if position < 0.0 {
+                return Ok(Some(2)); // SELL / SHORT
             }
-            let _ = prev;
         }
+        self.last_position = position;
         Ok(None)
     }
 
@@ -177,15 +187,21 @@ impl WasmRunner {
 
         let memory = self.instance.get_memory(&mut self.store, "memory")
             .ok_or("no memory")?;
-        let signal = {
+        let position = {
             let data = memory.data(&self.store);
-            data[sig_ptr as usize + (self.history_len - 1)]
+            Self::read_f64_at(data, sig_ptr as usize + (self.history_len - 1) * 8)
         };
 
-        if signal != self.last_signal && signal != 0 {
-            self.last_signal = signal;
-            return Ok(Some(signal));
+        let prev = self.last_position;
+        if (position > 0.0 && prev <= 0.0) || (position < 0.0 && prev >= 0.0) {
+            self.last_position = position;
+            if position > 0.0 {
+                return Ok(Some(1)); // BUY / LONG
+            } else if position < 0.0 {
+                return Ok(Some(2)); // SELL / SHORT
+            }
         }
+        self.last_position = position;
         Ok(None)
     }
 }

@@ -22,12 +22,17 @@ export type RLConfig = {
 	training_method: 'ppo' | 'reinforce'
 	lr: number
 	hidden_size: number
+	num_layers: number
+	activation: 'relu' | 'tanh'
 	ppo_epochs: number
 	clip_epsilon: number
 	value_coef: number
 	entropy_coef: number
 	gae_lambda: number
 	batch_episodes: number
+	reward_norm: boolean
+	lr_schedule: boolean
+	entropy_anneal: boolean
 }
 
 export type FeatureImportance = {

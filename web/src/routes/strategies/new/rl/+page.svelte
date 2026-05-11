@@ -29,12 +29,17 @@
 	let training_method = $state<'ppo' | 'reinforce'>('ppo')
 	let lr = $state(0.0001)
 	let hidden_size = $state(64)
+	let num_layers = $state(2)
+	let activation = $state<'relu' | 'tanh'>('relu')
 	let ppo_epochs = $state(4)
 	let clip_epsilon = $state(0.2)
 	let value_coef = $state(0.5)
 	let entropy_coef = $state(0.01)
 	let gae_lambda = $state(0.95)
 	let batch_episodes = $state(8)
+	let reward_norm = $state(true)
+	let lr_schedule = $state(true)
+	let entropy_anneal = $state(true)
 
 	function fmtDate(d: Date) {
 		return d.toISOString().slice(0, 10)
@@ -97,12 +102,17 @@
 		training_method,
 		lr,
 		hidden_size,
+		num_layers,
+		activation,
 		ppo_epochs,
 		clip_epsilon,
 		value_coef,
 		entropy_coef,
 		gae_lambda,
 		batch_episodes,
+		reward_norm,
+		lr_schedule,
+		entropy_anneal,
 	})
 
 	let split = $derived(splitPreview(train_from, train_to))
@@ -222,6 +232,22 @@
 					</select>
 				</div>
 				<div class="param">
+					<span class="param-label">Layers</span>
+					<select bind:value={num_layers} class="method-select">
+						<option value={1}>1</option>
+						<option value={2}>2</option>
+						<option value={3}>3</option>
+						<option value={4}>4</option>
+					</select>
+				</div>
+				<div class="param">
+					<span class="param-label">Activation</span>
+					<select bind:value={activation} class="method-select">
+						<option value="relu">ReLU</option>
+						<option value="tanh">Tanh</option>
+					</select>
+				</div>
+				<div class="param">
 					<span class="param-label">Epochs</span>
 					<input type="number" min="1" max="20" bind:value={ppo_epochs} class="num-input" />
 				</div>
@@ -245,6 +271,20 @@
 					<span class="param-label">Batch episodes</span>
 					<input type="number" min="2" max="32" bind:value={batch_episodes} class="num-input" />
 				</div>
+			</div>
+			<div class="arch-toggles">
+				<label class="checkbox-label">
+					<input type="checkbox" bind:checked={reward_norm} />
+					Reward norm
+				</label>
+				<label class="checkbox-label">
+					<input type="checkbox" bind:checked={lr_schedule} />
+					LR schedule
+				</label>
+				<label class="checkbox-label">
+					<input type="checkbox" bind:checked={entropy_anneal} />
+					Entropy anneal
+				</label>
 			</div>
 		</div>
 	{/if}
@@ -384,6 +424,7 @@
 	}
 	.ppo-params { margin-top: -8px; }
 	.param-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+	.arch-toggles { display: flex; gap: 16px; margin-top: 12px; flex-wrap: wrap; }
 	.param { display: flex; flex-direction: column; gap: 4px; }
 	.param-label { color: var(--text-muted); font-size: 0.7rem; }
 	.error { background: var(--red-bg); border-radius: 6px; color: var(--red-muted); font-size: 0.85rem; padding: 10px 14px; }
