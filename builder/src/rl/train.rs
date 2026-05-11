@@ -1206,7 +1206,8 @@ pub fn train_reinforce(
         if val_states.nrows() > 0 && ((ep + 1) % validation_interval == 0 || ep + 1 == config.max_episodes) {
             let val_metric = greedy_objective(&actor, &val_states, closes, val_indices, config, charges);
             val_metric_opt = Some(val_metric);
-            if val_metric > best_val_metric + config.min_delta {
+            let improvement_threshold = config.min_delta * best_val_metric.abs().max(1.0);
+            if val_metric > best_val_metric + improvement_threshold {
                 best_val_metric = val_metric;
                 best_actor = actor.clone();
                 best_episode = ep + 1;
@@ -1397,7 +1398,8 @@ pub fn train_ppo(
         if val_states.nrows() > 0 && ((iteration + 1) % validation_interval == 0 || iteration + 1 == config.max_episodes) {
             let val_metric = greedy_objective(&actor, &val_states, closes, val_indices, config, charges);
             val_metric_opt = Some(val_metric);
-            if val_metric > best_val_metric + config.min_delta {
+            let improvement_threshold = config.min_delta * best_val_metric.abs().max(1.0);
+            if val_metric > best_val_metric + improvement_threshold {
                 best_val_metric = val_metric;
                 best_actor = actor.clone();
                 best_iteration = iteration + 1;
