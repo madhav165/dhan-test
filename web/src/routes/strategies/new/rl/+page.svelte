@@ -23,6 +23,8 @@
 		return [{ name: name as any, period: 14 }]
 	}
 
+	const INTERVALS = ['1min', '5min', '15min', '25min', '60min', 'day'] as const
+	let interval = $state<string>('day')
 	let reward: RLReward = $state('pnl')
 	let allow_short = $state(false)
 	let lookback_candles = $state(20)
@@ -108,6 +110,7 @@
 		security_id: instrument?.security_id ?? '',
 		exchange_segment: instrument?.exchange_segment ?? '',
 		trading_symbol: instrument?.trading_symbol ?? '',
+		interval,
 		train_from,
 		train_to,
 		training_method,
@@ -163,6 +166,16 @@
 				<button type="button" class="remove" onclick={() => { instrument = null }}>×</button>
 			</div>
 		{/if}
+	</div>
+
+	<div class="field">
+		<label>Candle interval</label>
+		<select bind:value={interval} class="method-select">
+			{#each INTERVALS as iv}
+				<option value={iv}>{iv}</option>
+			{/each}
+		</select>
+		<p class="hint">Frequency of candles used for training (e.g. 5min, day)</p>
 	</div>
 
 	<div class="field">

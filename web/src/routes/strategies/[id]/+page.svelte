@@ -72,7 +72,7 @@
 	<div>
 		<a href="/strategies" class="back">← Strategies</a>
 		<h1>{strategy.name}</h1>
-		<p class="meta">Created {new Date(strategy.created_at).toLocaleDateString('en-IN')}</p>
+		<p class="meta">Created {new Date(strategy.created_at).toLocaleDateString('en-IN')}{#if strategy.interval} · {strategy.interval}{/if}</p>
 	</div>
 	<div class="actions">
 		{#if strategy.wasm_key}

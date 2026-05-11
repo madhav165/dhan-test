@@ -15,6 +15,7 @@ export type RLConfig = {
 	security_id: string
 	exchange_segment: string
 	trading_symbol: string
+	interval: string
 	train_from: string
 	train_to: string
 	test_from?: string

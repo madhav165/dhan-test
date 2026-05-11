@@ -766,11 +766,12 @@ async fn process_rl_job(
     ).await.map_err(|e| e.to_string())?;
 
     let row = db.query_one(
-        "select rl_config from strategies where id=$1",
+        "select interval, rl_config from strategies where id=$1",
         &[&strategy_id],
     ).await.map_err(|e| e.to_string())?;
 
-    let rl_config: serde_json::Value = row.get(0);
+    let strategy_interval: String = row.get(0);
+    let rl_config: serde_json::Value = row.get(1);
 
     let train_from: String = rl_config["train_from"].as_str().unwrap_or("").to_string();
     let train_to: String = rl_config["train_to"].as_str().unwrap_or("").to_string();
@@ -835,13 +836,14 @@ async fn process_rl_job(
         .ok_or_else(|| "No exchange segment configured in RL config".to_string())?
         .to_string();
 
-    // Broker charges (daily = delivery)
+    // Broker charges: intraday for non-day intervals
+    let trade_type = if strategy_interval == "day" { "delivery" } else { "intraday" };
     let charge_row = db.query_one(
         "select brokerage_flat::float8, brokerage_pct::float8, stt_buy_pct::float8, \
                 stt_sell_pct::float8, exchange_pct::float8, sebi_pct::float8, \
                 stamp_buy_pct::float8, gst_pct::float8 \
-         from broker_charges where trade_type = 'delivery'",
-        &[],
+         from broker_charges where trade_type = $1",
+        &[&trade_type],
     ).await.map_err(|e| e.to_string())?;
     let charges = rl::train::BrokerCharges {
         brokerage_flat: charge_row.get(0),
@@ -859,15 +861,16 @@ async fn process_rl_job(
         let to = to.to_string();
         let sid = security_id.clone();
         let seg = exchange_segment.clone();
+        let iv = strategy_interval.clone();
         async move {
             db.query(
                 "select extract(epoch from timestamp)::bigint, open::float8, high::float8,
                         low::float8, close::float8, volume
                  from candles
-                 where security_id=$1 and exchange_segment=$2 and interval='day'
-                 and timestamp::date between $3::text::date and $4::text::date
+                 where security_id=$1 and exchange_segment=$2 and interval=$3
+                 and timestamp::date between $4::text::date and $5::text::date
                  order by timestamp",
-                &[&sid, &seg, &from, &to],
+                &[&sid, &seg, &iv, &from, &to],
             ).await.map_err(|e: tokio_postgres::Error| e.to_string())
         }
     };
