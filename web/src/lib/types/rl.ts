@@ -42,6 +42,8 @@ export type RLConfig = {
 	action_std: number
 	action_penalty: number
 	position_deadband: number
+	state_mode?: 'baseline' | 'hybrid' | 'lean'
+	velocity_lookback?: number
 }
 
 export type FeatureImportance = {

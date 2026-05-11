@@ -28,6 +28,8 @@
 	let reward: RLReward = $state('pnl')
 	let allow_short = $state(false)
 	let lookback_candles = $state(20)
+	let state_mode = $state<'baseline' | 'hybrid' | 'lean'>('hybrid')
+	let velocity_lookback = $state(5)
 	let train_from = $state('')
 	let train_to = $state('')
 	let selectedIndicators: string[] = $state(['rsi', 'sma'])
@@ -135,6 +137,8 @@
 		action_std,
 		action_penalty,
 		position_deadband,
+		state_mode,
+		velocity_lookback: state_mode === 'baseline' ? undefined : velocity_lookback,
 	})
 
 	let split = $derived(splitPreview(train_from, train_to))
@@ -202,13 +206,50 @@
 				</button>
 			{/each}
 		</div>
-		<p class="hint">Selected indicators + a {lookback_candles}-candle OHLCV window form the state.</p>
+		<p class="hint">
+			{#if state_mode === 'baseline'}
+				Selected indicators + a {lookback_candles}-candle OHLCV window form the state.
+			{:else if state_mode === 'lean'}
+				Selected indicators + their {velocity_lookback}-bar velocity form the state. No OHLCV lags.
+			{:else}
+				Selected indicators + a {lookback_candles}-candle OHLCV window + indicator velocities form the state.
+			{/if}
+		</p>
 	</div>
 
 	<div class="field">
 		<label>OHLCV lookback candles</label>
-		<input type="number" min="5" max="100" bind:value={lookback_candles} class="num-input" />
+		<input type="number" min="0" max="100" bind:value={lookback_candles} class="num-input" />
+		{#if state_mode === 'lean'}
+			<p class="hint" style="color: var(--accent)">Lean mode: set this to 0 to drop OHLCV lags entirely.</p>
+		{/if}
 	</div>
+
+	<div class="field">
+		<label>State architecture</label>
+		<select bind:value={state_mode} class="method-select">
+			<option value="baseline">Baseline (OHLCV lags only)</option>
+			<option value="hybrid">Hybrid (OHLCV lags + indicator velocities)</option>
+			<option value="lean">Lean (indicator velocities only, no lags)</option>
+		</select>
+		<p class="hint">
+			{#if state_mode === 'baseline'}
+				No velocity features. Traditional approach with OHLCV lookback lags.
+			{:else if state_mode === 'lean'}
+				No OHLCV lags. Pure indicator + velocity state (~10 features). Set lookback to 0.
+			{:else}
+				Best of both worlds: OHLCV lags + indicator velocity features.
+			{/if}
+		</p>
+	</div>
+
+	{#if state_mode !== 'baseline'}
+		<div class="field">
+			<label>Velocity lookback</label>
+			<input type="number" min="1" max="50" bind:value={velocity_lookback} class="num-input" />
+			<p class="hint">How many bars back to compute rate-of-change (momentum). Default: 5.</p>
+		</div>
+	{/if}
 
 	<div class="field">
 		<label>Constraints</label>
