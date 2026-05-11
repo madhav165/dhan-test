@@ -470,10 +470,10 @@ async fn process_run_job(
     let wasm_key: Option<String> = run_row.get(3);
     let wasm_key = wasm_key.ok_or_else(|| "strategy not compiled".to_string())?;
 
-    let rl_config: serde_json::Value = run_row.get(4);
+    let rl_config: Option<serde_json::Value> = run_row.get(4);
     let rule_json: Option<serde_json::Value> = run_row.get(5);
 
-    let (lookback, velocity_lookback) = if !rl_config.is_null() {
+    let (lookback, velocity_lookback) = if let Some(ref rl_config) = rl_config {
         let lb = rl_config["lookback_candles"].as_u64().unwrap_or(20) as usize;
         let vl = rl_config["velocity_lookback"].as_u64().map(|v| v as usize);
         (lb, vl)
@@ -522,19 +522,21 @@ async fn process_run_job(
     };
 
     let mut max_period = lookback;
-    if let Some(arr) = rl_config["indicators"].as_array() {
-        for ind in arr {
-            if let Some(p) = ind["period"].as_u64() {
-                max_period = max_period.max(p as usize);
-            }
-            if let Some(p) = ind["fast"].as_u64() {
-                max_period = max_period.max(p as usize);
-            }
-            if let Some(p) = ind["slow"].as_u64() {
-                max_period = max_period.max(p as usize);
-            }
-            if let Some(p) = ind["signal_period"].as_u64() {
-                max_period = max_period.max(p as usize);
+    if let Some(ref rl_config) = rl_config {
+        if let Some(arr) = rl_config["indicators"].as_array() {
+            for ind in arr {
+                if let Some(p) = ind["period"].as_u64() {
+                    max_period = max_period.max(p as usize);
+                }
+                if let Some(p) = ind["fast"].as_u64() {
+                    max_period = max_period.max(p as usize);
+                }
+                if let Some(p) = ind["slow"].as_u64() {
+                    max_period = max_period.max(p as usize);
+                }
+                if let Some(p) = ind["signal_period"].as_u64() {
+                    max_period = max_period.max(p as usize);
+                }
             }
         }
     }
