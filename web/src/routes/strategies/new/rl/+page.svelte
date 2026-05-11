@@ -32,7 +32,7 @@
 	let velocity_lookback = $state(5)
 	let train_from = $state('')
 	let train_to = $state('')
-	let selectedIndicators: string[] = $state(['rsi', 'sma'])
+	let selectedIndicators: string[] = $state(['rsi', 'ema', 'bb', 'obv'])
 	let constraints: RLConstraint[] = $state([])
 	let training_method = $state<'ppo' | 'reinforce'>('ppo')
 	let lr = $state(0.0001)
