@@ -702,15 +702,13 @@ fn step_reward(
         let delta = action - prev_pos;
 
         if delta.abs() > 1e-8 {
-            // Realize PnL on closed/reduced portion
+            // Close/reduced portion: only subtract costs (MTM already captured the PnL)
             if prev_pos > 0.0 && action < prev_pos {
                 let closed = prev_pos - action.max(0.0);
-                reward += closed * (price - *entry_price);
                 reward -= charges.cost(*entry_price, price) * closed;
                 *trades += 1;
             } else if prev_pos < 0.0 && action > prev_pos {
                 let closed = prev_pos.abs() - action.min(0.0).abs();
-                reward += closed * (*entry_price - price);
                 reward -= charges.cost(price, *entry_price) * closed;
                 *trades += 1;
             }
@@ -748,7 +746,8 @@ fn step_reward(
                 *position = -1.0; *entry_price = price; *holding = 0; *trades += 1;
             }
             (1.0, 0.0) | (1.0, 2.0) => {
-                reward += (price - *entry_price) - charges.cost(*entry_price, price);
+                // MTM already captured the PnL; only subtract costs
+                reward -= charges.cost(*entry_price, price);
                 *trades += 1;
                 *position = 0.0; *holding = 0;
                 if action == 2.0 && config.allow_short {
@@ -756,7 +755,8 @@ fn step_reward(
                 }
             }
             (-1.0, 0.0) | (-1.0, 1.0) => {
-                reward += (*entry_price - price) - charges.cost(price, *entry_price);
+                // MTM already captured the PnL; only subtract costs
+                reward -= charges.cost(price, *entry_price);
                 *trades += 1;
                 *position = 0.0; *holding = 0;
                 if action == 1.0 {
@@ -958,14 +958,6 @@ fn rollout(
         prev_action = action;
     }
 
-    if position != 0.0 && n > 0 {
-        let last_idx = start + n - 1;
-        let last_price = closes[candle_indices[last_idx]];
-        if let Some(last_reward) = rewards.last_mut() {
-            *last_reward += close_position_reward(position, entry_price, last_price, charges);
-        }
-    }
-
     let (returns, episode_return) = objective_returns(&rewards, config);
     for (s, r) in steps.iter_mut().zip(returns) { s.ret = r; }
     (steps, episode_return)
@@ -1069,18 +1061,6 @@ fn rollout_ppo(
         steps.push(TrajectoryStep { state, action, log_prob, value, reward: r });
         rewards.push(r);
         prev_action = action;
-    }
-
-    if position != 0.0 && n > 0 {
-        let last_idx = start + n - 1;
-        let last_price = closes[candle_indices[last_idx]];
-        let close_r = close_position_reward(position, entry_price, last_price, charges);
-        if let Some(last_step) = steps.last_mut() {
-            last_step.reward += close_r;
-        }
-        if let Some(last_r) = rewards.last_mut() {
-            *last_r += close_r;
-        }
     }
 
     let episode_return = match config.reward_type.as_str() {
