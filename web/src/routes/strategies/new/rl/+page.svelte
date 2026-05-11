@@ -40,10 +40,10 @@
 	let reward_norm = $state(true)
 	let lr_schedule = $state(true)
 	let entropy_anneal = $state(true)
-	let regularization_type = $state<'none' | 'l1' | 'l2'>('none')
-	let regularization_lambda = $state(0.0)
+	let regularization_type = $state<'none' | 'l1' | 'l2'>('l2')
+	let regularization_lambda = $state(0.001)
 	let action_std = $state(0.3)
-	let action_penalty = $state(0.0)
+	let action_penalty = $state(0.01)
 	let position_deadband = $state(0.05)
 
 	function fmtDate(d: Date) {

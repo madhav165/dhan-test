@@ -626,11 +626,11 @@ impl Default for TrainConfig {
             reward_norm: true,
             lr_schedule: true,
             entropy_anneal: true,
-            regularization_type: "none".into(),
-            regularization_lambda: 0.0,
+            regularization_type: "l2".into(),
+            regularization_lambda: 0.001,
             continuous_action: false,
             action_std: 0.3,
-            action_penalty: 0.0,
+            action_penalty: 0.01,
             position_deadband: 0.05,
         }
     }
