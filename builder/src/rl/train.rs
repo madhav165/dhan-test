@@ -628,37 +628,6 @@ fn compute_returns(rewards: &[f64], gamma: f64) -> Vec<f64> {
     returns.iter().map(|r| (r - mean) / std).collect()
 }
 
-/// Running mean and variance tracker using Welford's online algorithm.
-struct RunningNormalizer {
-    count: usize,
-    mean: f64,
-    m2: f64,
-}
-
-impl RunningNormalizer {
-    fn new() -> Self {
-        Self { count: 0, mean: 0.0, m2: 0.0 }
-    }
-
-    fn update(&mut self, values: &[f64]) {
-        for &x in values {
-            self.count += 1;
-            let delta = x - self.mean;
-            self.mean += delta / self.count as f64;
-            let delta2 = x - self.mean;
-            self.m2 += delta * delta2;
-        }
-    }
-
-    fn normalize(&self, values: &mut [f64]) {
-        if self.count < 2 { return; }
-        let std = (self.m2 / self.count as f64).sqrt().max(1e-8);
-        for v in values.iter_mut() {
-            *v = (*v - self.mean) / std;
-        }
-    }
-}
-
 fn lr_at_step(initial_lr: f64, step: usize, total_steps: usize) -> f64 {
     if total_steps == 0 { return initial_lr; }
     let frac = step as f64 / total_steps as f64;
@@ -668,7 +637,7 @@ fn lr_at_step(initial_lr: f64, step: usize, total_steps: usize) -> f64 {
 fn entropy_at_step(initial_entropy: f64, step: usize, total_steps: usize) -> f64 {
     if total_steps == 0 { return initial_entropy; }
     let frac = step as f64 / total_steps as f64;
-    initial_entropy * (1.0 - frac)
+    (initial_entropy * (1.0 - frac)).max(0.001)
 }
 
 fn action_std_at_step(initial_std: f64, step: usize, total_steps: usize) -> f64 {
@@ -1309,7 +1278,6 @@ pub fn train_ppo(
     let mut iterations_since_best = 0usize;
     let mut total_episodes = 0usize;
     let mut metrics: Vec<EpisodeMetric> = vec![];
-    let mut return_normalizer = RunningNormalizer::new();
     let validation_interval = config.validation_interval.max(1);
     let ppo_epochs = config.ppo_epochs.max(1);
     let clip_epsilon = config.clip_epsilon;
@@ -1367,11 +1335,6 @@ pub fn train_ppo(
                 batch_advantages.push(adv);
                 batch_returns.push(ret);
             }
-        }
-
-        if config.reward_norm {
-            return_normalizer.update(&batch_returns);
-            return_normalizer.normalize(&mut batch_returns);
         }
 
         let adv_mean = batch_advantages.iter().sum::<f64>() / batch_advantages.len() as f64;
