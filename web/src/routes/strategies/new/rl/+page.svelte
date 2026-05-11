@@ -28,6 +28,8 @@
 	let constraints: RLConstraint[] = $state([])
 	let training_method = $state<'ppo' | 'reinforce'>('ppo')
 	let lr = $state(0.0001)
+	let actor_lr = $state(0.0001)
+	let critic_lr = $state(0.001)
 	let hidden_size = $state(64)
 	let num_layers = $state(2)
 	let activation = $state<'relu' | 'tanh'>('relu')
@@ -106,6 +108,8 @@
 		train_to,
 		training_method,
 		lr,
+		actor_lr,
+		critic_lr,
 		hidden_size,
 		num_layers,
 		activation,
@@ -230,8 +234,12 @@
 			<label>PPO hyperparameters</label>
 			<div class="param-grid">
 				<div class="param">
-					<span class="param-label">LR</span>
-					<input type="number" min="0.000001" max="0.01" step="0.000001" bind:value={lr} class="num-input" />
+					<span class="param-label">Actor LR</span>
+					<input type="number" min="0.000001" max="0.01" step="0.000001" bind:value={actor_lr} class="num-input" />
+				</div>
+				<div class="param">
+					<span class="param-label">Critic LR</span>
+					<input type="number" min="0.000001" max="0.01" step="0.000001" bind:value={critic_lr} class="num-input" />
 				</div>
 				<div class="param">
 					<span class="param-label">Hidden</span>

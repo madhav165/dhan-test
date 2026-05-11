@@ -21,6 +21,8 @@ export type RLConfig = {
 	test_to?: string
 	training_method: 'ppo' | 'reinforce'
 	lr: number
+	actor_lr: number
+	critic_lr: number
 	hidden_size: number
 	num_layers: number
 	activation: 'relu' | 'tanh'
