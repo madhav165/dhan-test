@@ -137,7 +137,7 @@ pub fn stationary_transform(
             for i in 1..n {
                 deltas[i] = values[i] - values[i - 1];
             }
-            let mut normalized = vec![0.0; n];
+            let mut normalized = vec![f64::NAN; n];
             for i in window..n {
                 let win = &deltas[i - window + 1..=i];
                 let mean = win.iter().sum::<f64>() / window as f64;
@@ -155,11 +155,6 @@ pub fn stationary_transform(
 
     // Process grouped BB components into %B and bandwidth
     for (period, (upper, middle, lower)) in bb_groups {
-        // Only compute if all three components were present
-        if upper.iter().any(|v| v.is_nan()) || middle.iter().any(|v| v.is_nan()) || lower.iter().any(|v| v.is_nan()) {
-            continue;
-        }
-
         // Bandwidth: (Upper - Lower) / Middle
         // Detects volatility squeezes; stationary because it's a ratio
         let bandwidth: Vec<f64> = upper
@@ -205,7 +200,7 @@ pub fn build_state_matrix_with_indices(
     let mut feature_names: Vec<String> = indicator_series.iter().map(|(n, _)| n.clone()).collect();
     for lag in 1..=lookback {
         for col in ["open", "high", "low", "close", "volume"] {
-            feature_names.push(format!("{}_t-{}", col, lag));
+            feature_names.push(format!("{}_ret_t-{}", col, lag));
         }
     }
 
@@ -221,13 +216,15 @@ pub fn build_state_matrix_with_indices(
             state[j] = v;
         }
         let mut off = ind_count;
+        let current_close = candles.closes[i].max(1e-8);
+        let current_vol = candles.volumes[i].max(1e-8);
         for lag in 1..=lookback {
             let t = i - lag;
-            state[off] = candles.opens[t];   off += 1;
-            state[off] = candles.highs[t];   off += 1;
-            state[off] = candles.lows[t];    off += 1;
-            state[off] = candles.closes[t];  off += 1;
-            state[off] = candles.volumes[t]; off += 1;
+            state[off] = (candles.opens[t] - current_close) / current_close;   off += 1;
+            state[off] = (candles.highs[t] - current_close) / current_close;   off += 1;
+            state[off] = (candles.lows[t] - current_close) / current_close;    off += 1;
+            state[off] = (candles.closes[t] - current_close) / current_close;  off += 1;
+            state[off] = (candles.volumes[t] - current_vol) / current_vol;     off += 1;
         }
         rows.push(state);
         candle_indices.push(i);
