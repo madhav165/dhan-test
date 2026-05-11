@@ -103,6 +103,7 @@ pub extern "C" fn run(len: u32) -> *mut f64 {
     let mut entry_price = 0.0_f64;
     let mut holding = 0_usize;
     let mut prev_target: f64 = 0.0;
+    const POSITION_DEADBAND: f64 = 0.05;
     for i in 1..n {
         let price = prices[i];
         let unrealized_pnl = if position > 0.0 {
@@ -117,6 +118,7 @@ pub extern "C" fn run(len: u32) -> *mut f64 {
         let norm_unrealized = (unrealized_pnl / entry_price.max(1e-8)).clamp(-5.0, 5.0);
         let target = signal(prices, opens, volumes, highs, lows, i, norm_position, norm_holding, norm_unrealized);
         let target = if target.is_nan() { prev_target } else { target.clamp(-1.0, 1.0) };
+        let target = if (target - position).abs() < POSITION_DEADBAND { position } else { target };
         s.signals[i] = target;
 
         if target != position {
@@ -272,13 +274,15 @@ struct BrokerCharges {
 }
 
 impl BrokerCharges {
-    fn cost(&self, buy_price: f64, sell_price: f64) -> f64 {
-        let brokerage = (self.brokerage_pct * buy_price).min(self.brokerage_flat)
-            + (self.brokerage_pct * sell_price).min(self.brokerage_flat);
-        let stt = self.stt_buy_pct * buy_price + self.stt_sell_pct * sell_price;
-        let exchange = self.exchange_pct * (buy_price + sell_price);
-        let sebi = self.sebi_pct * (buy_price + sell_price);
-        let stamp = self.stamp_buy_pct * buy_price;
+    fn cost(&self, buy_price: f64, sell_price: f64, size: f64) -> f64 {
+        let trade_value_buy = buy_price * size;
+        let trade_value_sell = sell_price * size;
+        let brokerage = (self.brokerage_pct * trade_value_buy).min(self.brokerage_flat)
+            + (self.brokerage_pct * trade_value_sell).min(self.brokerage_flat);
+        let stt = self.stt_buy_pct * trade_value_buy + self.stt_sell_pct * trade_value_sell;
+        let exchange = self.exchange_pct * (trade_value_buy + trade_value_sell);
+        let sebi = self.sebi_pct * (trade_value_buy + trade_value_sell);
+        let stamp = self.stamp_buy_pct * trade_value_buy;
         let gst = self.gst_pct * (brokerage + exchange + sebi);
         brokerage + stt + exchange + sebi + stamp + gst
     }
@@ -295,7 +299,7 @@ fn compute_metrics(closes: &[f64], signals: &[f64], charges: &BrokerCharges) -> 
     let mut max_drawdown = 0.0f64;
 
     let mut record = |gross_pnl: f64, buy_price: f64, sell_price: f64, size: f64| {
-        let cost = charges.cost(buy_price, sell_price) * size;
+        let cost = charges.cost(buy_price, sell_price, size);
         let pnl = gross_pnl - cost;
         total_pnl += pnl;
         num_trades += 1;
@@ -306,10 +310,13 @@ fn compute_metrics(closes: &[f64], signals: &[f64], charges: &BrokerCharges) -> 
         if dd > max_drawdown { max_drawdown = dd; }
     };
 
-    let mut prev_target: f64 = 0.0;
+    const POSITION_DEADBAND: f64 = 0.05;
     for (i, &target) in signals.iter().enumerate() {
         let target = target.clamp(-1.0, 1.0);
-        if target == prev_target { prev_target = target; continue; }
+        let delta = (target - position).abs();
+        if delta < POSITION_DEADBAND {
+            continue;
+        }
 
         if target != position {
             if position > 0.0 && target < position {
@@ -335,7 +342,6 @@ fn compute_metrics(closes: &[f64], signals: &[f64], charges: &BrokerCharges) -> 
             }
         }
         position = target;
-        prev_target = target;
     }
 
     if position != 0.0 {
@@ -788,6 +794,7 @@ async fn process_rl_job(
     let continuous_action = rl_config["continuous_action"].as_bool().unwrap_or(false);
     let action_std = rl_config["action_std"].as_f64().unwrap_or(0.3);
     let action_penalty = rl_config["action_penalty"].as_f64().unwrap_or(0.0);
+    let position_deadband = rl_config["position_deadband"].as_f64().unwrap_or(0.05);
 
     let indicator_specs: Vec<IndicatorSpec> = serde_json::from_value(
         rl_config["indicators"].clone()
@@ -928,6 +935,7 @@ async fn process_rl_job(
         continuous_action,
         action_std,
         action_penalty,
+        position_deadband,
     };
 
     let result = if training_method == "reinforce" {
@@ -947,7 +955,7 @@ async fn process_rl_job(
             if test_states.nrows() == 0 {
                 None
             } else {
-                Some(rl::train::evaluate(&result.net, &test_states, &test_candles.closes, &test_indices, allow_short, &charges))
+                Some(rl::train::evaluate(&result.net, &test_states, &test_candles.closes, &test_indices, allow_short, &charges, position_deadband))
             }
         }
     } else {

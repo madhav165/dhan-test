@@ -44,6 +44,7 @@
 	let regularization_lambda = $state(0.0)
 	let action_std = $state(0.3)
 	let action_penalty = $state(0.0)
+	let position_deadband = $state(0.05)
 
 	function fmtDate(d: Date) {
 		return d.toISOString().slice(0, 10)
@@ -122,6 +123,7 @@
 		continuous_action: true,
 		action_std,
 		action_penalty,
+		position_deadband,
 	})
 
 	let split = $derived(splitPreview(train_from, train_to))
@@ -303,6 +305,10 @@
 				<div class="param">
 					<span class="param-label">Action penalty</span>
 					<input type="number" min="0" max="1.0" step="0.001" bind:value={action_penalty} class="num-input" />
+				</div>
+				<div class="param">
+					<span class="param-label">Position deadband</span>
+					<input type="number" min="0" max="0.5" step="0.01" bind:value={position_deadband} class="num-input" />
 				</div>
 			</div>
 			<div class="param-grid" style="margin-top: 8px;">

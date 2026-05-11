@@ -546,13 +546,15 @@ pub struct BrokerCharges {
 }
 
 impl BrokerCharges {
-    pub fn cost(&self, buy_price: f64, sell_price: f64) -> f64 {
-        let brokerage = (self.brokerage_pct * buy_price).min(self.brokerage_flat)
-            + (self.brokerage_pct * sell_price).min(self.brokerage_flat);
-        let stt = self.stt_buy_pct * buy_price + self.stt_sell_pct * sell_price;
-        let exchange = self.exchange_pct * (buy_price + sell_price);
-        let sebi = self.sebi_pct * (buy_price + sell_price);
-        let stamp = self.stamp_buy_pct * buy_price;
+    pub fn cost(&self, buy_price: f64, sell_price: f64, size: f64) -> f64 {
+        let trade_value_buy = buy_price * size;
+        let trade_value_sell = sell_price * size;
+        let brokerage = (self.brokerage_pct * trade_value_buy).min(self.brokerage_flat)
+            + (self.brokerage_pct * trade_value_sell).min(self.brokerage_flat);
+        let stt = self.stt_buy_pct * trade_value_buy + self.stt_sell_pct * trade_value_sell;
+        let exchange = self.exchange_pct * (trade_value_buy + trade_value_sell);
+        let sebi = self.sebi_pct * (trade_value_buy + trade_value_sell);
+        let stamp = self.stamp_buy_pct * trade_value_buy;
         let gst = self.gst_pct * (brokerage + exchange + sebi);
         brokerage + stt + exchange + sebi + stamp + gst
     }
@@ -591,6 +593,7 @@ pub struct TrainConfig {
     pub continuous_action: bool,
     pub action_std: f64,
     pub action_penalty: f64,
+    pub position_deadband: f64,
 }
 
 impl Default for TrainConfig {
@@ -628,6 +631,7 @@ impl Default for TrainConfig {
             continuous_action: false,
             action_std: 0.3,
             action_penalty: 0.0,
+            position_deadband: 0.05,
         }
     }
 }
@@ -701,15 +705,15 @@ fn step_reward(
         let prev_pos = *position;
         let delta = action - prev_pos;
 
-        if delta.abs() > 1e-8 {
+        if delta.abs() >= config.position_deadband {
             // Close/reduced portion: only subtract costs (MTM already captured the PnL)
             if prev_pos > 0.0 && action < prev_pos {
                 let closed = prev_pos - action.max(0.0);
-                reward -= charges.cost(*entry_price, price) * closed;
+                reward -= charges.cost(*entry_price, price, closed);
                 *trades += 1;
             } else if prev_pos < 0.0 && action > prev_pos {
                 let closed = prev_pos.abs() - action.min(0.0).abs();
-                reward -= charges.cost(price, *entry_price) * closed;
+                reward -= charges.cost(price, *entry_price, closed);
                 *trades += 1;
             }
 
@@ -732,9 +736,10 @@ fn step_reward(
                     *entry_price = (*entry_price * same_dir_pos.abs() + price * added) / new_size;
                 }
             }
+
+            *position = action;
         }
 
-        *position = action;
         if *position != 0.0 { *holding += 1; } else { *holding = 0; }
     } else {
         // Discrete action space (backward compatible)
@@ -747,7 +752,7 @@ fn step_reward(
             }
             (1.0, 0.0) | (1.0, 2.0) => {
                 // MTM already captured the PnL; only subtract costs
-                reward -= charges.cost(*entry_price, price);
+                reward -= charges.cost(*entry_price, price, 1.0);
                 *trades += 1;
                 *position = 0.0; *holding = 0;
                 if action == 2.0 && config.allow_short {
@@ -756,7 +761,7 @@ fn step_reward(
             }
             (-1.0, 0.0) | (-1.0, 1.0) => {
                 // MTM already captured the PnL; only subtract costs
-                reward -= charges.cost(price, *entry_price);
+                reward -= charges.cost(price, *entry_price, 1.0);
                 *trades += 1;
                 *position = 0.0; *holding = 0;
                 if action == 1.0 {
@@ -805,13 +810,14 @@ fn decision_state(base_state: &[f64], position: f64, holding: usize, entry_price
 }
 
 fn close_position_reward(position: f64, entry_price: f64, price: f64, charges: &BrokerCharges) -> f64 {
-    if position > 0.0 {
-        position * (price - entry_price) - charges.cost(entry_price, price) * position
-    } else if position < 0.0 {
-        position.abs() * (entry_price - price) - charges.cost(price, entry_price) * position.abs()
+    let size = position.abs();
+    let gross = if position > 0.0 {
+        size * (price - entry_price)
     } else {
-        0.0
-    }
+        size * (entry_price - price)
+    };
+    let (buy, sell) = if position > 0.0 { (entry_price, price) } else { (price, entry_price) };
+    gross - charges.cost(buy, sell, size)
 }
 
 fn greedy_objective(
@@ -1204,12 +1210,12 @@ pub fn train_reinforce(
         net = best_net;
     }
 
-    let train_pnl = evaluate(&net, &train_states, closes, train_indices, config.allow_short, charges);
+    let train_pnl = evaluate(&net, &train_states, closes, train_indices, config.allow_short, charges, config.position_deadband);
     let val_pnl = if val_states.nrows() > 0 {
-        evaluate(&net, &val_states, closes, val_indices, config.allow_short, charges)
+        evaluate(&net, &val_states, closes, val_indices, config.allow_short, charges, config.position_deadband)
     } else { 0.0 };
     let test_pnl = if test_states.nrows() > 0 {
-        evaluate(&net, &test_states, closes, test_indices, config.allow_short, charges)
+        evaluate(&net, &test_states, closes, test_indices, config.allow_short, charges, config.position_deadband)
     } else { 0.0 };
     eprintln!("rl reinforce: done. train_pnl={:.4} val_pnl={:.4} test_pnl={:.4}", train_pnl, val_pnl, test_pnl);
     TrainResult { net, final_train_reward, train_pnl, val_pnl, test_pnl, episodes: episodes_run, best_episode, metrics }
@@ -1373,12 +1379,12 @@ pub fn train_ppo(
         net = best_net;
     }
 
-    let train_pnl = evaluate(&net, &train_states, closes, train_indices, config.allow_short, charges);
+    let train_pnl = evaluate(&net, &train_states, closes, train_indices, config.allow_short, charges, config.position_deadband);
     let val_pnl = if val_states.nrows() > 0 {
-        evaluate(&net, &val_states, closes, val_indices, config.allow_short, charges)
+        evaluate(&net, &val_states, closes, val_indices, config.allow_short, charges, config.position_deadband)
     } else { 0.0 };
     let test_pnl = if test_states.nrows() > 0 {
-        evaluate(&net, &test_states, closes, test_indices, config.allow_short, charges)
+        evaluate(&net, &test_states, closes, test_indices, config.allow_short, charges, config.position_deadband)
     } else { 0.0 };
     eprintln!("rl ppo: done. train_pnl={:.4} val_pnl={:.4} test_pnl={:.4}", train_pnl, val_pnl, test_pnl);
     let best_episode_actual = if best_iteration > 0 { best_iteration * batch_episodes } else { 0 };
@@ -1392,6 +1398,7 @@ pub fn evaluate(
     candle_indices: &[usize],
     allow_short: bool,
     charges: &BrokerCharges,
+    position_deadband: f64,
 ) -> f64 {
     let n = states.nrows();
     assert_eq!(n, candle_indices.len(), "state rows and candle indices must match");
@@ -1408,13 +1415,13 @@ pub fn evaluate(
 
         if net.continuous_action {
             let delta = action - position;
-            if delta.abs() > 1e-8 {
+            if delta.abs() >= position_deadband {
                 if position > 0.0 && action < position {
                     let closed = position - action.max(0.0);
-                    total_pnl += closed * (price - entry_price) - charges.cost(entry_price, price) * closed;
+                    total_pnl += closed * (price - entry_price) - charges.cost(entry_price, price, closed);
                 } else if position < 0.0 && action > position {
                     let closed = position.abs() - action.min(0.0).abs();
-                    total_pnl += closed * (entry_price - price) - charges.cost(price, entry_price) * closed;
+                    total_pnl += closed * (entry_price - price) - charges.cost(price, entry_price, closed);
                 }
                 if action == 0.0 {
                     entry_price = 0.0;
@@ -1430,8 +1437,8 @@ pub fn evaluate(
                         entry_price = (entry_price * same_dir_pos.abs() + price * added) / new_size;
                     }
                 }
+                position = action;
             }
-            position = action;
             holding = if position != 0.0 { holding + 1 } else { 0 };
         } else {
             match (position, action) {

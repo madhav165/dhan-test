@@ -38,6 +38,7 @@ export type RLConfig = {
 	continuous_action: boolean
 	action_std: number
 	action_penalty: number
+	position_deadband: number
 }
 
 export type FeatureImportance = {
