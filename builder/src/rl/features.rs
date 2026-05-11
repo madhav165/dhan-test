@@ -82,6 +82,116 @@ pub fn compute_indicators(candles: &Candles, specs: &[IndicatorSpec]) -> Vec<(St
     out
 }
 
+/// Apply stationary transformations to raw indicator series.
+/// This makes features regime-independent and bounded, which is critical for RL.
+pub fn stationary_transform(
+    candles: &Candles,
+    raw_indicators: &[(String, Vec<f64>)],
+) -> Vec<(String, Vec<f64>)> {
+    use std::collections::HashMap;
+
+    let n = candles.closes.len();
+    let mut result = vec![];
+
+    // Group BB components by period so we can compute %B and bandwidth
+    let mut bb_groups: HashMap<usize, (Vec<f64>, Vec<f64>, Vec<f64>)> = HashMap::new();
+
+    for (name, values) in raw_indicators {
+        if name.starts_with("ema_") {
+            // EMA distance from price: (Close - EMA) / EMA
+            // This is naturally stationary (percentage) and zero-centered when price = EMA
+            let dist: Vec<f64> = candles
+                .closes
+                .iter()
+                .zip(values.iter())
+                .map(|(c, ema)| (c - ema) / ema.max(1e-8))
+                .collect();
+            result.push((format!("{}_dist", name), dist));
+        } else if name.starts_with("rsi_") {
+            // RSI centered to [-1, 1]: (RSI - 50) / 50
+            // RSI is already bounded [0, 100]; this makes it zero-centered for the MLP
+            let centered: Vec<f64> = values.iter().map(|v| (v - 50.0) / 50.0).collect();
+            result.push((format!("{}_centered", name), centered));
+        } else if name.starts_with("bb_") {
+            // Parse bb_{period}_{component} (e.g., bb_20_upper)
+            let parts: Vec<&str> = name.split('_').collect();
+            if parts.len() >= 3 {
+                if let Ok(period) = parts[1].parse::<usize>() {
+                    let component = parts[2];
+                    let entry = bb_groups.entry(period).or_insert_with(|| {
+                        (vec![f64::NAN; n], vec![f64::NAN; n], vec![f64::NAN; n])
+                    });
+                    match component {
+                        "upper" => entry.0 = values.clone(),
+                        "middle" => entry.1 = values.clone(),
+                        "lower" => entry.2 = values.clone(),
+                        _ => {}
+                    }
+                }
+            }
+        } else if name == "obv" {
+            // OBV delta normalized by rolling standard deviation
+            // Raw OBV is cumulative and non-stationary; delta captures flow direction
+            let window = 20usize;
+            let mut deltas = vec![0.0; n];
+            for i in 1..n {
+                deltas[i] = values[i] - values[i - 1];
+            }
+            let mut normalized = vec![0.0; n];
+            for i in window..n {
+                let win = &deltas[i - window + 1..=i];
+                let mean = win.iter().sum::<f64>() / window as f64;
+                let std = (win.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / window as f64)
+                    .sqrt()
+                    .max(1e-8);
+                normalized[i] = (deltas[i] - mean) / std;
+            }
+            result.push(("obv_delta_norm".into(), normalized));
+        } else {
+            // Pass through any other indicators unchanged (backward compatibility)
+            result.push((name.clone(), values.clone()));
+        }
+    }
+
+    // Process grouped BB components into %B and bandwidth
+    for (period, (upper, middle, lower)) in bb_groups {
+        // Only compute if all three components were present
+        if upper.iter().any(|v| v.is_nan()) || middle.iter().any(|v| v.is_nan()) || lower.iter().any(|v| v.is_nan()) {
+            continue;
+        }
+
+        // Bandwidth: (Upper - Lower) / Middle
+        // Detects volatility squeezes; stationary because it's a ratio
+        let bandwidth: Vec<f64> = upper
+            .iter()
+            .zip(middle.iter())
+            .zip(lower.iter())
+            .map(|((u, m), l)| (u - l) / m.max(1e-8))
+            .collect();
+        result.push((format!("bb_{}_bandwidth", period), bandwidth));
+
+        // %B: (Close - Lower) / (Upper - Lower)
+        // Where is price within the bands? 0.0 = lower, 1.0 = upper, 0.5 = middle
+        let percent_b: Vec<f64> = candles
+            .closes
+            .iter()
+            .zip(upper.iter())
+            .zip(lower.iter())
+            .map(|((c, u), l)| {
+                let range = u - l;
+                if range < 1e-8 {
+                    0.5
+                } else {
+                    (c - l) / range
+                }
+            })
+            .collect();
+        result.push((format!("bb_{}_percent_b", period), percent_b));
+    }
+
+    result
+}
+
 pub fn build_state_matrix_with_indices(
     candles: &Candles,
     indicator_series: &[(String, Vec<f64>)],

@@ -1,5 +1,5 @@
 mod rl;
-use rl::features::{Candles, IndicatorSpec, compute_indicators, build_state_matrix_with_indices, normalise_with_stats, apply_normalisation_stats};
+use rl::features::{Candles, IndicatorSpec, compute_indicators, stationary_transform, build_state_matrix_with_indices, normalise_with_stats, apply_normalisation_stats};
 use rl::train::{TrainConfig, train_reinforce, train_ppo, weights_to_bytes, split_points, collect_greedy_states};
 use rl::distill::{feature_importance, normalise_importance, distil, net_to_rust};
 
@@ -888,7 +888,8 @@ async fn process_rl_job(
     let train_epochs: Vec<i64> = train_rows.iter().map(|r| r.get::<_, i64>(0)).collect();
     let train_candles = to_candles(train_rows);
 
-    let indicator_series = compute_indicators(&train_candles, &indicator_specs);
+    let raw_indicator_series = compute_indicators(&train_candles, &indicator_specs);
+    let indicator_series = stationary_transform(&train_candles, &raw_indicator_series);
     let (raw_states, mut feature_names, candle_indices) = build_state_matrix_with_indices(&train_candles, &indicator_series, lookback);
     if raw_states.nrows() == 0 {
         return Err(format!("Not enough usable candles after indicator warmup for {} {} in {} to {}", security_id, exchange_segment, train_from, train_to));
@@ -954,7 +955,8 @@ async fn process_rl_job(
             None
         } else {
             let test_candles = to_candles(test_rows);
-            let test_ind = compute_indicators(&test_candles, &indicator_specs);
+            let raw_test_ind = compute_indicators(&test_candles, &indicator_specs);
+            let test_ind = stationary_transform(&test_candles, &raw_test_ind);
             let (mut test_states, _, test_indices) = build_state_matrix_with_indices(&test_candles, &test_ind, lookback);
             apply_normalisation_stats(&mut test_states, &means, &stds)?;
             if test_states.nrows() == 0 {
