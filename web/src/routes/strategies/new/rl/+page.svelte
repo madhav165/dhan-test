@@ -42,7 +42,6 @@
 	let entropy_anneal = $state(true)
 	let regularization_type = $state<'none' | 'l1' | 'l2'>('none')
 	let regularization_lambda = $state(0.0)
-	let continuous_action = $state(false)
 	let action_std = $state(0.3)
 	let action_penalty = $state(0.0)
 
@@ -120,7 +119,7 @@
 		entropy_anneal,
 		regularization_type,
 		regularization_lambda,
-		continuous_action,
+		continuous_action: true,
 		action_std,
 		action_penalty,
 	})
@@ -296,24 +295,16 @@
 					Entropy anneal
 				</label>
 			</div>
-			<div class="arch-toggles" style="margin-top: 12px;">
-				<label class="checkbox-label">
-					<input type="checkbox" bind:checked={continuous_action} />
-					Continuous position sizing
-				</label>
-			</div>
-			{#if continuous_action}
-				<div class="param-grid" style="margin-top: 8px;">
-					<div class="param">
-						<span class="param-label">Action std</span>
-						<input type="number" min="0.05" max="1.0" step="0.05" bind:value={action_std} class="num-input" />
-					</div>
-					<div class="param">
-						<span class="param-label">Action penalty</span>
-						<input type="number" min="0" max="1.0" step="0.001" bind:value={action_penalty} class="num-input" />
-					</div>
+			<div class="param-grid" style="margin-top: 8px;">
+				<div class="param">
+					<span class="param-label">Action std</span>
+					<input type="number" min="0.05" max="1.0" step="0.05" bind:value={action_std} class="num-input" />
 				</div>
-			{/if}
+				<div class="param">
+					<span class="param-label">Action penalty</span>
+					<input type="number" min="0" max="1.0" step="0.001" bind:value={action_penalty} class="num-input" />
+				</div>
+			</div>
 			<div class="param-grid" style="margin-top: 8px;">
 				<div class="param">
 					<span class="param-label">Regularization</span>
