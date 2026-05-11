@@ -599,7 +599,7 @@ impl Default for TrainConfig {
             batch_episodes: 8,
             minibatch_size: 64,
             hidden_size: 64,
-            num_layers: 2,
+            num_layers: 4,
             activation: "relu".into(),
             reward_norm: true,
             lr_schedule: true,

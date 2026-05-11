@@ -31,7 +31,7 @@
 	let actor_lr = $state(0.0001)
 	let critic_lr = $state(0.001)
 	let hidden_size = $state(64)
-	let num_layers = $state(2)
+	let num_layers = $state(4)
 	let activation = $state<'relu' | 'tanh'>('relu')
 	let ppo_epochs = $state(4)
 	let clip_epsilon = $state(0.2)
@@ -257,6 +257,10 @@
 						<option value={2}>2</option>
 						<option value={3}>3</option>
 						<option value={4}>4</option>
+						<option value={5}>5</option>
+						<option value={6}>6</option>
+						<option value={7}>7</option>
+						<option value={8}>8</option>
 					</select>
 				</div>
 				<div class="param">
