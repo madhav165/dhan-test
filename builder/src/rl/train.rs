@@ -1,5 +1,6 @@
 use ndarray::{Array1, Array2, Axis};
 use rand::Rng;
+use rayon::prelude::*;
 
 pub type Action = f64;
 
@@ -81,16 +82,21 @@ impl MLP {
     /// For discrete: output is [p0, p1, p2] softmax probs.
     /// For continuous: output is [mean, 0.0, 0.0] where mean is tanh-constrained.
     pub fn forward_full(&self, x: &[f64]) -> (Vec<Array1<f64>>, Vec<Array1<f64>>, [f64; 3]) {
-        let mut pre_acts = vec![];
-        let mut acts = vec![];
+        let mut pre_acts = Vec::with_capacity(self.num_layers);
+        let mut acts = Vec::with_capacity(self.num_layers);
         let mut current = Array1::from_vec(x.to_vec());
-        
-        for (w, b) in self.layer_weights.iter().zip(&self.layer_biases) {
+
+        let last_layer = self.num_layers.saturating_sub(1);
+        for (idx, (w, b)) in self.layer_weights.iter().zip(&self.layer_biases).enumerate() {
             let pre = w.dot(&current) + b;
             let h = pre.mapv(|v| self.activate(v));
             pre_acts.push(pre);
-            acts.push(h.clone());
-            current = h;
+            if idx == last_layer {
+                acts.push(h);
+            } else {
+                acts.push(h.clone());
+                current = h;
+            }
         }
         
         if self.continuous_action {
@@ -1222,17 +1228,24 @@ pub fn train_ppo(
         let mut batch_returns: Vec<f64> = vec![];
         let mut episode_returns = vec![];
 
-        for _ in 0..batch_episodes {
-            let (traj, ep_return) = rollout_ppo(&net, &train_states, closes, train_indices, config, charges, &mut rng);
+        let rollouts: Vec<_> = (0..batch_episodes)
+            .into_par_iter()
+            .map(|_| {
+                let mut rng = rand::rng();
+                let (traj, ep_return) = rollout_ppo(&net, &train_states, closes, train_indices, config, charges, &mut rng);
+                let traj_rewards: Vec<f64> = traj.iter().map(|t| t.reward).collect();
+                let traj_values: Vec<f64> = traj.iter().map(|t| t.value).collect();
+                let advantages = gae(&traj_rewards, &traj_values, config.gamma, gae_lambda);
+                let returns: Vec<f64> = advantages.iter().zip(&traj_values).map(|(a, v)| a + v).collect();
+                let steps: Vec<_> = traj.into_iter().zip(advantages.into_iter().zip(returns.into_iter())).collect();
+                (steps, ep_return)
+            })
+            .collect();
+
+        for (steps, ep_return) in rollouts {
             episode_returns.push(ep_return);
             total_episodes += 1;
-
-            let traj_rewards: Vec<f64> = traj.iter().map(|t| t.reward).collect();
-            let traj_values: Vec<f64> = traj.iter().map(|t| t.value).collect();
-            let advantages = gae(&traj_rewards, &traj_values, config.gamma, gae_lambda);
-            let returns: Vec<f64> = advantages.iter().zip(&traj_values).map(|(a, v)| a + v).collect();
-
-            for (t, (adv, ret)) in traj.into_iter().zip(advantages.into_iter().zip(returns.into_iter())) {
+            for (t, (adv, ret)) in steps {
                 batch_states.push(t.state);
                 batch_actions.push(t.action);
                 batch_log_probs.push(t.log_prob);
