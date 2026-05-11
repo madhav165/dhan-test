@@ -70,7 +70,7 @@ pub fn codegen_transforms(specs: &[IndicatorSpec]) -> Vec<FeatureCodegen> {
             IndicatorSpec::Obv => {
                 out.push(FeatureCodegen {
                     name: "obv_delta_norm".into(),
-                    expr: "{ let obv = obv(prices, volumes); let delta = if i > 0 { obv[i] - obv[i-1] } else { 0.0 }; let window = 20usize; if i >= window { let mean: f64 = (1..=window).map(|k| obv[i-k+1] - obv[i-k]).sum::<f64>() / window as f64; let std = ((1..=window).map(|k| { let d = obv[i-k+1] - obv[i-k]; (d - mean).powi(2) }).sum::<f64>() / window as f64).sqrt().max(1e-8); (delta - mean) / std } else { 0.0 } }".into(),
+                    expr: "{ let obv = obv(prices, volumes); let delta = if i > 0 { obv[i] - obv[i-1] } else { 0.0 }; let window = 20usize; if i >= window { let mean: f64 = (1..=window).map(|k| obv[i-k+1] - obv[i-k]).sum::<f64>() / window as f64; let std = ((1..=window).map(|k| { let d = obv[i-k+1] - obv[i-k]; (d - mean).powi(2) }).sum::<f64>() / window as f64).sqrt().max(1e-8); (delta - mean) / std } else { f64::NAN } }".into(),
                 });
             }
             _ => {
@@ -275,10 +275,18 @@ pub fn net_to_rust(
         ));
     }
     lines.push(format!("    let mut off = {};", num_inds));
+    lines.push("    let current_close = prices[i].max(1e-8);".into());
+    lines.push("    let current_vol = volumes[i].max(1e-8);".into());
     lines.push(format!("    for lag in 1_usize..={} {{", lookback));
     lines.push("        let t = i - lag;".into());
     lines.push("        let open = if opens.len() > t { opens[t] } else { prices[t] };".into());
-    lines.push("        let raw = [open, highs[t], lows[t], prices[t], volumes[t]];".into());
+    lines.push("        let raw = [".into());
+    lines.push("            (open - current_close) / current_close,".into());
+    lines.push("            (highs[t] - current_close) / current_close,".into());
+    lines.push("            (lows[t] - current_close) / current_close,".into());
+    lines.push("            (prices[t] - current_close) / current_close,".into());
+    lines.push("            (volumes[t] - current_vol) / current_vol,".into());
+    lines.push("        ];".into());
     lines.push("        for k in 0..5_usize { feat[off+k] = (raw[k] - means[off+k]) / stds[off+k]; }".into());
     lines.push("        off += 5;".into());
     lines.push("    }".into());
