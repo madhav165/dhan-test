@@ -1,7 +1,7 @@
 mod rl;
 use rl::features::{Candles, IndicatorSpec, compute_indicators, stationary_transform, build_state_matrix_with_indices, normalise_with_stats, apply_normalisation_stats};
 use rl::train::{TrainConfig, train_reinforce, train_ppo, weights_to_bytes, split_points, collect_greedy_states};
-use rl::distill::{feature_importance, normalise_importance, distil, net_to_rust};
+use rl::distill::{feature_importance, normalise_importance, distil, net_to_rust, codegen_transforms};
 
 use std::env;
 use std::fs;
@@ -989,8 +989,9 @@ async fn process_rl_job(
 
     let approx_rules = distil(&result.actor, &train_states_for_explain, &feature_names, 3);
 
+    let feature_codegen = codegen_transforms(&indicator_specs);
     let rust_snippet = net_to_rust(
-        &result.actor, &indicator_specs, lookback, &means, &stds, allow_short,
+        &result.actor, &feature_codegen, lookback, &means, &stds, allow_short,
     );
     let split_date = |state_row: usize| -> String {
         candle_indices.get(state_row)
