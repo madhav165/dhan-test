@@ -158,7 +158,7 @@ pub fn net_to_rust(
     let state_dim = num_inds + 5 * lookback + 3;
     let mut lines: Vec<String> = vec![];
 
-    lines.push(format!("    if i < {} {{ return 0; }}", lookback));
+    lines.push(format!("    if i < {} {{ return 0.0; }}", lookback));
 
     for (idx, (w, b)) in net.layers.iter().enumerate() {
         lines.push(format!("    let w{}: &[f64] = {};", idx, fmt_slice(w)));
@@ -175,7 +175,7 @@ pub fn net_to_rust(
     for (idx, spec) in indicator_specs.iter().enumerate() {
         let expr = indicator_expr(spec);
         lines.push(format!(
-            "    feat[{idx}] = {{ let v = {expr}; if v[i].is_nan() {{ return 255; }} (v[i] - means[{idx}]) / stds[{idx}] }};"
+            "    feat[{idx}] = {{ let v = {expr}; if v[i].is_nan() {{ return f64::NAN; }} (v[i] - means[{idx}]) / stds[{idx}] }};"
         ));
     }
     lines.push(format!("    let mut off = {};", num_inds));
