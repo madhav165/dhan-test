@@ -290,10 +290,9 @@ func (w *Worker) failJob(jobID, errMsg string) {
 	}
 
 	// Retryable: 429, 5xx, network errors — set back to pending with backoff
-	// 429s get a longer backoff (10s) to let Dhan's rate limit window reset.
 	backoff := "now() + interval '2 seconds'"
 	if strings.Contains(errMsg, "status 429") {
-		backoff = "now() + interval '10 seconds'"
+		backoff = "now() + interval '500 milliseconds'"
 	}
 	w.DB.Exec(`
 		update ohlcv_jobs
