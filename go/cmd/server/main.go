@@ -76,8 +76,8 @@ func main() {
 		go bot.PollForever()
 	}
 
-	// Shared per-user rate limiter for Dhan data APIs (5 req/s)
-	dataRL := ratelimit.NewStore(rate.Every(time.Second/5), 5)
+	// Shared per-user rate limiter for Dhan data APIs (5 req/s, burst=1)
+	dataRL := ratelimit.NewStore(rate.Every(time.Second/5), 1)
 
 	runWorker := &run.Worker{DB: database, EncKey: key, DhanBaseURL: os.Getenv("DHAN_BASE_URL"), DataRL: dataRL}
 	go runWorker.Start()

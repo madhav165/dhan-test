@@ -3,17 +3,15 @@ package ohlcv
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/madhav165/dhan-test/go/internal/broker"
 	"github.com/madhav165/dhan-test/go/internal/candles"
 	"github.com/madhav165/dhan-test/go/internal/ratelimit"
 )
-
-type stock struct{ secID, seg string }
 
 type Worker struct {
 	DB          *sql.DB
@@ -30,13 +28,19 @@ func (w *Worker) Start() {
 	}
 
 	// Run immediately on boot if needed, then schedule daily
-	w.runOnce(userID)
+	w.createJobs(userID)
+
+	// Start 5 workers with semaphore
+	sem := make(chan struct{}, 5)
+	for i := 0; i < 5; i++ {
+		go w.workerLoop(userID, sem)
+	}
 
 	for {
 		d := next4PMIST()
-		log.Printf("ohlcv: next run in %v", d.Round(time.Minute))
+		log.Printf("ohlcv: next job creation in %v", d.Round(time.Minute))
 		time.Sleep(d)
-		w.runOnce(userID)
+		w.createJobs(userID)
 	}
 }
 
@@ -50,13 +54,7 @@ func next4PMIST() time.Duration {
 	return time.Until(next)
 }
 
-func (w *Worker) runOnce(userID string) {
-	clientID, accessToken, err := broker.GetToken(w.DB, w.EncKey, userID)
-	if err != nil {
-		log.Printf("ohlcv: failed to get token for user %s: %v", userID, err)
-		return
-	}
-
+func (w *Worker) createJobs(userID string) {
 	// Fetch all NSE_E stocks from nifty500_constituents joined with instruments
 	rows, err := w.DB.Query(`
 		select i.security_id, i.exchange_segment
@@ -71,6 +69,7 @@ func (w *Worker) runOnce(userID string) {
 	}
 	defer rows.Close()
 
+	type stock struct{ secID, seg string }
 	var stocks []stock
 	for rows.Next() {
 		var s stock
@@ -86,111 +85,147 @@ func (w *Worker) runOnce(userID string) {
 		return
 	}
 
-	// Create jobs for stocks that don't already have a pending job
 	for _, s := range stocks {
-		var exists int
-		w.DB.QueryRow(`
-			select count(*) from ohlcv_jobs
-			where security_id = $1 and exchange_segment = $2 and status = 'pending'
-		`, s.secID, s.seg).Scan(&exists)
-		if exists > 0 {
-			continue
-		}
-
-		_, err := w.DB.Exec(`
-			insert into ohlcv_jobs (security_id, exchange_segment, status)
-			values ($1, $2, 'pending')
-		`, s.secID, s.seg)
-		if err != nil {
-			log.Printf("ohlcv: failed to create job for %s: %v", s.secID, err)
-		}
+		w.createJobsForStock(s.secID, s.seg)
 	}
 
-	// Worker pool: 5 goroutines
-	const numWorkers = 5
-	jobs := make(chan stock, numWorkers)
-	var wg sync.WaitGroup
-
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-		for s := range jobs {
-			w.processStock(s, clientID, accessToken, userID)
-		}
-		}()
-	}
-
-	// Feed workers
-	for _, s := range stocks {
-		// Only process if there's a pending job for this stock
-		var jobID string
-		err := w.DB.QueryRow(`
-			select id from ohlcv_jobs
-			where security_id = $1 and exchange_segment = $2 and status = 'pending'
-			order by created_at
-			limit 1
-		`, s.secID, s.seg).Scan(&jobID)
-		if err != nil {
-			continue // no pending job
-		}
-		jobs <- s
-	}
-	close(jobs)
-	wg.Wait()
-
-	log.Printf("ohlcv: completed run for %d stocks", len(stocks))
+	log.Printf("ohlcv: created jobs for %d stocks", len(stocks))
 }
 
-func (w *Worker) processStock(s stock, clientID, accessToken, userID string) {
-	ctx := context.Background()
-
+func (w *Worker) createJobsForStock(secID, seg string) {
 	// Determine date range
 	var maxDate sql.NullTime
 	w.DB.QueryRow(`
 		select max(timestamp) from candles
 		where security_id = $1 and exchange_segment = $2 and interval = '1d'
-	`, s.secID, s.seg).Scan(&maxDate)
+	`, secID, seg).Scan(&maxDate)
 
-	var fromDate, toDate string
 	today := time.Now().Format("2006-01-02")
+	var fromDate, toDate string
 
 	if !maxDate.Valid {
-		// No data: fetch 10 years
 		fromDate = time.Now().AddDate(-10, 0, 0).Format("2006-01-02")
 		toDate = today
-		log.Printf("ohlcv: first load for %s %s %s–%s", s.secID, s.seg, fromDate, toDate)
 	} else {
-		// Incremental: from max date to today
 		fromDate = maxDate.Time.Format("2006-01-02")
 		if fromDate >= today {
-			log.Printf("ohlcv: up to date for %s %s", s.secID, s.seg)
-			w.markDone(s.secID, s.seg, "")
-			return
+			return // up to date
 		}
 		toDate = today
-		log.Printf("ohlcv: incremental for %s %s %s–%s", s.secID, s.seg, fromDate, toDate)
 	}
 
-	if err := candles.FetchAndStore(ctx, w.DB, w.DhanBaseURL, clientID, accessToken, s.secID, s.seg, "1d", fromDate, toDate, w.DataRL.Get(userID)); err != nil {
-		log.Printf("ohlcv: fetch failed for %s: %v", s.secID, err)
-		w.markDone(s.secID, s.seg, err.Error())
+	// Split into 90-day chunks
+	from, _ := time.Parse("2006-01-02", fromDate)
+	to, _ := time.Parse("2006-01-02", toDate)
+
+	for cur := from; !cur.After(to); {
+		end := cur.AddDate(0, 0, 89)
+		if end.After(to) {
+			end = to
+		}
+
+		chunkFrom := cur.Format("2006-01-02")
+		chunkTo := end.Format("2006-01-02")
+
+		// Skip if pending or done job already exists for this chunk
+		var exists int
+		w.DB.QueryRow(`
+			select count(*) from ohlcv_jobs
+			where security_id = $1 and exchange_segment = $2 and from_date = $3 and to_date = $4
+			and status in ('pending', 'done')
+		`, secID, seg, chunkFrom, chunkTo).Scan(&exists)
+		if exists > 0 {
+			cur = end.AddDate(0, 0, 1)
+			continue
+		}
+
+		_, err := w.DB.Exec(`
+			insert into ohlcv_jobs (security_id, exchange_segment, from_date, to_date, interval, status, retry_count, max_retries)
+			values ($1, $2, $3, $4, '1d', 'pending', 0, 3)
+			on conflict (security_id, exchange_segment, from_date, to_date) where status = 'pending' do nothing
+		`, secID, seg, chunkFrom, chunkTo)
+		if err != nil {
+			log.Printf("ohlcv: failed to create job for %s %s–%s: %v", secID, chunkFrom, chunkTo, err)
+		}
+
+		cur = end.AddDate(0, 0, 1)
+	}
+}
+
+func (w *Worker) workerLoop(userID string, sem chan struct{}) {
+	for {
+		sem <- struct{}{} // acquire slot
+
+		job := w.claimJob()
+		if job == nil {
+			<-sem // release slot
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		w.processJob(job, userID)
+		<-sem // release slot
+	}
+}
+
+type job struct {
+	id              string
+	securityID      string
+	exchangeSegment string
+	fromDate        string
+	toDate          string
+	interval        string
+	retryCount      int
+}
+
+func (w *Worker) claimJob() *job {
+	var j job
+	err := w.DB.QueryRow(`
+		update ohlcv_jobs
+		set status = 'running', updated_at = now()
+		where id = (
+			select id from ohlcv_jobs
+			where status = 'pending'
+			order by created_at
+			for update skip locked
+			limit 1
+		)
+		returning id, security_id, exchange_segment, from_date::text, to_date::text, interval, retry_count
+	`).Scan(&j.id, &j.securityID, &j.exchangeSegment, &j.fromDate, &j.toDate, &j.interval, &j.retryCount)
+	if err != nil {
+		return nil
+	}
+	return &j
+}
+
+func (w *Worker) processJob(j *job, userID string) {
+	ctx := context.Background()
+
+	clientID, accessToken, err := broker.GetToken(w.DB, w.EncKey, userID)
+	if err != nil {
+		log.Printf("ohlcv: failed to get token for job %s: %v", j.id, err)
+		w.failJob(j.id, fmt.Sprintf("token: %v", err))
 		return
 	}
 
-	w.markDone(s.secID, s.seg, "")
+	log.Printf("ohlcv: processing job %s %s %s–%s", j.securityID, j.exchangeSegment, j.fromDate, j.toDate)
+	if err := candles.FetchChunk(ctx, w.DB, w.DhanBaseURL, clientID, accessToken, j.securityID, j.exchangeSegment, j.interval, j.fromDate, j.toDate, w.DataRL.Get(userID)); err != nil {
+		log.Printf("ohlcv: job %s failed: %v", j.id, err)
+		w.failJob(j.id, err.Error())
+		return
+	}
+
+	w.DB.Exec(`update ohlcv_jobs set status = 'done', updated_at = now() where id = $1`, j.id)
+	log.Printf("ohlcv: job %s done", j.id)
 }
 
-func (w *Worker) markDone(secID, seg, errMsg string) {
-	if errMsg != "" {
-		w.DB.Exec(`
-			update ohlcv_jobs set status = 'failed', error = $1, updated_at = now()
-			where security_id = $2 and exchange_segment = $3 and status = 'pending'
-		`, errMsg, secID, seg)
-	} else {
-		w.DB.Exec(`
-			update ohlcv_jobs set status = 'done', updated_at = now()
-			where security_id = $1 and exchange_segment = $2 and status = 'pending'
-		`, secID, seg)
-	}
+func (w *Worker) failJob(jobID, errMsg string) {
+	w.DB.Exec(`
+		update ohlcv_jobs
+		set status = case when retry_count >= max_retries then 'failed' else 'pending' end,
+		    error = case when retry_count >= max_retries then $1 else null end,
+		    retry_count = retry_count + 1,
+		    updated_at = now()
+		where id = $2
+	`, errMsg, jobID)
 }
