@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/madhav165/dhan-test/go/internal/broker"
 	"github.com/madhav165/dhan-test/go/internal/ratelimit"
@@ -17,7 +16,7 @@ type Handler struct {
 	EncryptionKey []byte
 	DhanBaseURL   string
 	quoteRL       *ratelimit.Store // 1 req/s per user
-	dataRL        *ratelimit.Store // 5 req/s per user
+	quoteSem      chan struct{}    // max concurrent quote requests
 }
 
 func NewHandler(db *sql.DB, key []byte, baseURL string) *Handler {
@@ -26,7 +25,7 @@ func NewHandler(db *sql.DB, key []byte, baseURL string) *Handler {
 		EncryptionKey: key,
 		DhanBaseURL:   baseURL,
 		quoteRL:       ratelimit.NewStore(rate.Every(1), 1),
-		dataRL:        ratelimit.NewStore(rate.Every(time.Second/5), 1),
+		quoteSem:      make(chan struct{}, 5),
 	}
 }
 
@@ -37,6 +36,9 @@ func (h *Handler) proxyDhan(endpoint string, rl *ratelimit.Store) http.HandlerFu
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
+
+		h.quoteSem <- struct{}{}
+		defer func() { <-h.quoteSem }()
 
 		if err := rl.Get(userID).Wait(r.Context()); err != nil {
 			http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
