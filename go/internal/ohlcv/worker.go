@@ -55,6 +55,13 @@ func next4PMIST() time.Duration {
 }
 
 func (w *Worker) createJobs(userID string) {
+	// Verify broker connection exists before creating jobs
+	_, _, err := broker.GetToken(w.DB, w.EncKey, userID)
+	if err != nil {
+		log.Printf("ohlcv: no valid broker connection for user %s, skipping job creation: %v", userID, err)
+		return
+	}
+
 	// Fetch all NSE_E stocks from nifty500_constituents joined with instruments
 	rows, err := w.DB.Query(`
 		select i.security_id, i.exchange_segment
