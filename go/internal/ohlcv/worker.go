@@ -80,8 +80,14 @@ func (w *Worker) resetOrphanedJobs() {
 	}
 	deleted, _ := res1.RowsAffected()
 
-	// Reset remaining orphaned running jobs to pending
-	res2, err := w.DB.Exec(`update ohlcv_jobs set status = 'pending', updated_at = now() where status = 'running'`)
+	// Reset remaining orphaned running jobs to pending, with a short backoff
+	// to prevent immediate re-claim burst on startup.
+	res2, err := w.DB.Exec(`
+		update ohlcv_jobs
+		set status = 'pending',
+		    retry_after = now() + interval '2 seconds',
+		    updated_at = now()
+		where status = 'running'`)
 	if err != nil {
 		log.Printf("ohlcv: failed to reset orphaned jobs: %v", err)
 		return
