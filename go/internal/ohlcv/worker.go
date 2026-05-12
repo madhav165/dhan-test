@@ -34,9 +34,11 @@ func (w *Worker) Start() {
 	// Run immediately on boot if needed, then schedule daily
 	w.createJobs(userID)
 
-	// Start 5 workers with semaphore
+	// Start 5 workers with semaphore, staggered 232ms apart to avoid
+	// burst at startup overwhelming the rate limiter.
 	sem := make(chan struct{}, 5)
 	for i := 0; i < 5; i++ {
+		time.Sleep(232 * time.Millisecond)
 		go w.workerLoop(userID, sem)
 	}
 
