@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -17,9 +18,12 @@ import (
 	"github.com/madhav165/dhan-test/go/internal/instrument"
 	"github.com/madhav165/dhan-test/go/internal/live"
 	"github.com/madhav165/dhan-test/go/internal/market"
+	"github.com/madhav165/dhan-test/go/internal/nifty500"
+	"github.com/madhav165/dhan-test/go/internal/ohlcv"
 	"github.com/madhav165/dhan-test/go/internal/result"
 	"github.com/madhav165/dhan-test/go/internal/run"
 	"github.com/madhav165/dhan-test/go/internal/telegram"
+	"golang.org/x/time/rate"
 )
 
 //go:embed migrations
@@ -64,6 +68,7 @@ func main() {
 	}
 
 	go instrument.RunScheduler(database)
+	go nifty500.RunScheduler(database)
 
 	if botToken := os.Getenv("TELEGRAM_BOT_TOKEN"); botToken != "" {
 		bot := &telegram.Bot{Token: botToken, DB: database}
@@ -73,10 +78,17 @@ func main() {
 	runWorker := &run.Worker{DB: database, EncKey: key, DhanBaseURL: os.Getenv("DHAN_BASE_URL")}
 	go runWorker.Start()
 
+	// Shared rate limiter for Dhan data APIs (5 req/s)
+	dataRL := rate.NewLimiter(rate.Every(time.Second/5), 5)
+
 	ih := &instrument.Handler{DB: database}
 	mh := market.NewHandler(database, key, os.Getenv("DHAN_BASE_URL"))
-	ch := &chart.Handler{DB: database, EncryptionKey: key, DhanBaseURL: os.Getenv("DHAN_BASE_URL")}
+	ch := &chart.Handler{DB: database, EncryptionKey: key, DhanBaseURL: os.Getenv("DHAN_BASE_URL"), Limiter: dataRL}
 	lh := live.NewHandler(database, key)
+	nh := &nifty500.Handler{DB: database}
+
+	ohlcvWorker := &ohlcv.Worker{DB: database, EncKey: key, DhanBaseURL: os.Getenv("DHAN_BASE_URL"), Limiter: dataRL}
+	go ohlcvWorker.Start()
 	rh, err := result.NewHandler(database)
 	if err != nil {
 		log.Fatalf("result handler: %v", err)
@@ -88,6 +100,7 @@ func main() {
 	ih.RegisterRoutes(mux)
 	ch.RegisterRoutes(mux)
 	lh.RegisterRoutes(mux)
+	nh.RegisterRoutes(mux)
 	rh.RegisterRoutes(mux)
 
 	port := os.Getenv("GO_PORT")
