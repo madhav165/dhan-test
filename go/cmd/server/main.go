@@ -109,7 +109,7 @@ func main() {
 
 	port := os.Getenv("GO_PORT")
 	if port == "" {
-		port = "8080"
+		port = "8081"
 	}
 
 	log.Printf("Go service listening on :%s", port)
