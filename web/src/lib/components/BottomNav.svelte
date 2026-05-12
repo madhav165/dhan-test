@@ -1,6 +1,23 @@
 <script lang="ts">
 	import { page } from '$app/stores'
+	import MoreMenu from '$lib/components/MoreMenu.svelte'
+	
+	let { isAdmin = false, moreExpanded = $bindable(false) } = $props()
+	
+	let lastPath = $state('')
+	
+	$effect(() => {
+		let path = $page.url.pathname
+		if (path !== lastPath && lastPath !== '') {
+			moreExpanded = false
+		}
+		lastPath = path
+	})
 </script>
+
+{#if moreExpanded}
+	<MoreMenu {isAdmin} expanded={moreExpanded} />
+{/if}
 
 <nav class="bottom-nav">
 	<a href="/charts" class="tab" class:active={$page.url.pathname.startsWith('/charts')}>
@@ -19,9 +36,9 @@
 		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
 		<span>Policies</span>
 	</a>
-	<a href="/profile/alerts" class="tab" class:active={$page.url.pathname.startsWith('/profile')}>
-		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-		<span>Alerts</span>
+	<a class="tab more-tab" onclick={() => moreExpanded = !moreExpanded}>
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+		<span>More</span>
 	</a>
 </nav>
 
@@ -41,6 +58,21 @@
 			background: var(--bg-surface);
 			border-top: 1px solid var(--border);
 			z-index: 20;
+		}
+
+		.tab.more-tab {
+			position: relative;
+		}
+
+		.tab.more-tab::after {
+			content: '';
+			position: absolute;
+			top: -8px;
+			right: 0;
+			width: 8px;
+			height: 8px;
+			background: var(--red);
+			border-radius: 50%;
 		}
 	}
 
@@ -64,5 +96,9 @@
 
 	.tab.active {
 		color: var(--accent);
+	}
+
+	.tab.more-tab.active::after {
+		background: var(--accent);
 	}
 </style>

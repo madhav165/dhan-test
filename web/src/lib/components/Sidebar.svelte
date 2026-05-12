@@ -16,6 +16,15 @@
 		expanded = false
 	}
 
+	function validate() {
+		if (!/^\d{10}$/.test(clientId.trim())) {
+			error = messages.broker.invalidClientId
+			return false
+		}
+		error = ''
+		return true
+	}
+
 	$effect(() => {
 		if ($page.url.searchParams.get('error') === 'invalid_client_id') {
 			expanded = true
@@ -25,15 +34,6 @@
 
 	function toggle() {
 		expanded = !expanded
-	}
-
-	function validate() {
-		if (!/^\d{10}$/.test(clientId.trim())) {
-			error = messages.broker.invalidClientId
-			return false
-		}
-		error = ''
-		return true
 	}
 </script>
 
@@ -79,7 +79,7 @@
 				{#if $brokerConnected}
 					<button class="disconnect-btn" onclick={disconnect}>Disconnect</button>
 				{:else}
-					<form method="GET" action="/auth/dhan" onsubmit={() => validate() || event.preventDefault()}>
+					<form method="GET" action="/auth/dhan" onsubmit={(e) => { if (!validate()) e.preventDefault() }}>
 						<input
 							type="text"
 							name="client_id"

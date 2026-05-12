@@ -8,6 +8,8 @@
 
 	let { children, data } = $props()
 
+	let moreExpanded = $state(false)
+
 	$effect(() => {
 		user.set(data.user ?? null)
 		brokerConnected.set(data.brokerConnected ?? false)
@@ -24,7 +26,7 @@
 		<Sidebar isAdmin={data.isAdmin ?? false} />
 		<main class:full-bleed={$page.url.pathname.startsWith('/charts')}>{@render children()}</main>
 	</div>
-	<BottomNav />
+	<BottomNav isAdmin={data.isAdmin ?? false} moreExpanded={moreExpanded} />
 {:else}
 	{@render children()}
 {/if}
