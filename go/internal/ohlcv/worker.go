@@ -61,10 +61,10 @@ func next4PMIST() time.Duration {
 }
 
 func (w *Worker) resetOrphanedJobs() {
-	// Delete orphaned running jobs that already have a pending counterpart
+	// Delete failed/running jobs that already have a pending counterpart
 	res1, err := w.DB.Exec(`
 		delete from ohlcv_jobs o1
-		where status = 'running'
+		where status in ('running', 'failed')
 		and exists (
 			select 1 from ohlcv_jobs o2
 			where o2.status = 'pending'
