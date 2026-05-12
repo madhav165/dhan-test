@@ -111,8 +111,7 @@ func (w *Worker) createJobsForStock(secID, seg string) {
 	var fromDate, toDate string
 
 	if !maxDate.Valid {
-		// TEMP: test with 200 days instead of 10 years
-		fromDate = time.Now().AddDate(0, 0, -200).Format("2006-01-02")
+		fromDate = time.Now().AddDate(-10, 0, 0).Format("2006-01-02")
 		toDate = today
 	} else {
 		fromDate = maxDate.Time.Format("2006-01-02")
