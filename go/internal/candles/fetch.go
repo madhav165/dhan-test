@@ -2,12 +2,15 @@ package candles
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 type candleResp struct {
@@ -50,7 +53,7 @@ func IntervalMinutes(interval string) int {
 	}
 }
 
-func FetchAndStore(db *sql.DB, dhanBaseURL, clientID, accessToken, secID, seg, interval, fromDate, toDate string, updateOnConflict ...bool) error {
+func FetchAndStore(ctx context.Context, db *sql.DB, dhanBaseURL, clientID, accessToken, secID, seg, interval, fromDate, toDate string, limiter *rate.Limiter, updateOnConflict ...bool) error {
 	doUpdate := len(updateOnConflict) > 0 && updateOnConflict[0]
 	dhanSeg, instrType := MapSegment(seg)
 	mins := IntervalMinutes(interval)
@@ -106,7 +109,13 @@ func FetchAndStore(db *sql.DB, dhanBaseURL, clientID, accessToken, secID, seg, i
 			endpoint = "/charts/intraday"
 		}
 
-		req, _ := http.NewRequest("POST", dhanBaseURL+endpoint, bytes.NewReader(body))
+		if limiter != nil {
+			if err := limiter.Wait(ctx); err != nil {
+				return fmt.Errorf("rate limit wait: %w", err)
+			}
+		}
+
+		req, _ := http.NewRequestWithContext(ctx, "POST", dhanBaseURL+endpoint, bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("access-token", accessToken)
 		req.Header.Set("client-id", clientID)
@@ -133,6 +142,63 @@ func FetchAndStore(db *sql.DB, dhanBaseURL, clientID, accessToken, secID, seg, i
 	}
 
 	return nil
+}
+
+func FetchChunk(ctx context.Context, db *sql.DB, dhanBaseURL, clientID, accessToken, secID, seg, interval, fromDate, toDate string, updateOnConflict ...bool) error {
+	doUpdate := len(updateOnConflict) > 0 && updateOnConflict[0]
+	dhanSeg, instrType := MapSegment(seg)
+	mins := IntervalMinutes(interval)
+
+	var body []byte
+	var endpoint string
+	if mins == 0 {
+		payload := map[string]any{
+			"securityId":      secID,
+			"exchangeSegment": dhanSeg,
+			"instrument":      instrType,
+			"expiryCode":      0,
+			"oi":              true,
+			"fromDate":        fromDate,
+			"toDate":          toDate,
+		}
+		body, _ = json.Marshal(payload)
+		endpoint = "/charts/historical"
+	} else {
+		payload := map[string]any{
+			"securityId":      secID,
+			"exchangeSegment": dhanSeg,
+			"instrument":      instrType,
+			"interval":        fmt.Sprintf("%d", mins),
+			"oi":              true,
+			"fromDate":        fromDate,
+			"toDate":          toDate,
+		}
+		body, _ = json.Marshal(payload)
+		endpoint = "/charts/intraday"
+	}
+
+	req, _ := http.NewRequestWithContext(ctx, "POST", dhanBaseURL+endpoint, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("access-token", accessToken)
+	req.Header.Set("client-id", clientID)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("dhan request: %w", err)
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("dhan %s status %d: %s", endpoint, resp.StatusCode, string(respBody))
+	}
+
+	var cr candleResp
+	if err := json.Unmarshal(respBody, &cr); err != nil {
+		return fmt.Errorf("parse candles: %w", err)
+	}
+
+	return upsert(db, secID, seg, interval, cr, doUpdate)
 }
 
 func upsert(db *sql.DB, secID, seg, interval string, c candleResp, update bool) error {

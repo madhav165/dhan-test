@@ -4,6 +4,8 @@
 	import { invalidateAll } from '$app/navigation'
 	import { messages } from '$lib/messages'
 
+	let { isAdmin = false } = $props()
+
 	let expanded = $state(false)
 	let clientId = $state('')
 	let error = $state('')
@@ -52,6 +54,14 @@
 		<a href="/profile/alerts" class="nav-link" class:active={$page.url.pathname.startsWith('/profile')}>
 			Alerts
 		</a>
+		<a href="/ohlcv" class="nav-link" class:active={$page.url.pathname.startsWith('/ohlcv')}>
+			OHLCV
+		</a>
+		{#if isAdmin}
+			<a href="/admin" class="nav-link" class:active={$page.url.pathname.startsWith('/admin')}>
+				Admin
+			</a>
+		{/if}
 	</nav>
 
 	<hr />

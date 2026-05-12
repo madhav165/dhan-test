@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -9,12 +10,14 @@ import (
 
 	"github.com/madhav165/dhan-test/go/internal/broker"
 	"github.com/madhav165/dhan-test/go/internal/candles"
+	"github.com/madhav165/dhan-test/go/internal/ratelimit"
 )
 
 type Worker struct {
 	DB          *sql.DB
 	EncKey      []byte
 	DhanBaseURL string
+	DataRL      *ratelimit.Store
 }
 
 func (w *Worker) Start() {
@@ -119,7 +122,7 @@ func (w *Worker) processRunJob(jobID, runID, interval, fromDate, toDate, userID 
 		}
 
 		log.Printf("run worker: fetching candles for %s %s %s %s–%s", i.secID, i.seg, interval, fromDate, toDate)
-		if err := candles.FetchAndStore(w.DB, w.DhanBaseURL, clientID, accessToken, i.secID, i.seg, interval, fromDate, toDate); err != nil {
+		if err := candles.FetchAndStore(context.Background(), w.DB, w.DhanBaseURL, clientID, accessToken, i.secID, i.seg, interval, fromDate, toDate, w.DataRL.Get(userID)); err != nil {
 			w.fail(jobID, fmt.Sprintf("fetch %s: %v", i.secID, err))
 			return
 		}
@@ -163,7 +166,7 @@ func (w *Worker) processRLJob(jobID, strategyID string, rlConfigRaw []byte, user
 
 	if count == 0 {
 		log.Printf("run worker: fetching candles for RL %s %s %s %s–%s", secID, seg, interval, trainFrom, trainTo)
-		if err := candles.FetchAndStore(w.DB, w.DhanBaseURL, clientID, accessToken, secID, seg, interval, trainFrom, trainTo); err != nil {
+		if err := candles.FetchAndStore(context.Background(), w.DB, w.DhanBaseURL, clientID, accessToken, secID, seg, interval, trainFrom, trainTo, w.DataRL.Get(userID)); err != nil {
 			w.failRL(jobID, fmt.Sprintf("fetch %s: %v", secID, err))
 			return
 		}

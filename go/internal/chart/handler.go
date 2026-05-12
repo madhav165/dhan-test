@@ -10,12 +10,14 @@ import (
 
 	"github.com/madhav165/dhan-test/go/internal/broker"
 	"github.com/madhav165/dhan-test/go/internal/candles"
+	"github.com/madhav165/dhan-test/go/internal/ratelimit"
 )
 
 type Handler struct {
 	DB            *sql.DB
 	EncryptionKey []byte
 	DhanBaseURL   string
+	DataRL        *ratelimit.Store
 }
 
 type Candle struct {
@@ -82,7 +84,7 @@ func (h *Handler) Candles(w http.ResponseWriter, r *http.Request) {
 			fetchTo = minDate
 		}
 		log.Printf("chart: fetching candles for %s %s %s %s–%s", securityID, exchangeSegment, interval, fetchFrom, fetchTo)
-		if err := candles.FetchAndStore(h.DB, h.DhanBaseURL, clientID, accessToken, securityID, exchangeSegment, interval, fetchFrom, fetchTo); err != nil {
+		if err := candles.FetchAndStore(r.Context(), h.DB, h.DhanBaseURL, clientID, accessToken, securityID, exchangeSegment, interval, fetchFrom, fetchTo, h.DataRL.Get(userID)); err != nil {
 			log.Printf("chart: fetch error: %v", err)
 			http.Error(w, "No data available for the selected date range.", http.StatusUnprocessableEntity)
 			return
@@ -101,7 +103,7 @@ func (h *Handler) Candles(w http.ResponseWriter, r *http.Request) {
 			maxDate = today
 		}
 		log.Printf("chart: refreshing candles for %s %s %s from %s", securityID, exchangeSegment, interval, maxDate)
-		if err := candles.FetchAndStore(h.DB, h.DhanBaseURL, clientID, accessToken, securityID, exchangeSegment, interval, maxDate, today, true); err != nil {
+		if err := candles.FetchAndStore(r.Context(), h.DB, h.DhanBaseURL, clientID, accessToken, securityID, exchangeSegment, interval, maxDate, today, h.DataRL.Get(userID), true); err != nil {
 			log.Printf("chart: refresh error: %v", err)
 			// non-fatal: serve what we have in DB
 		}

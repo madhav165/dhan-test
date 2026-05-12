@@ -21,7 +21,7 @@
 {#if !isAuthRoute && $user}
 	<Header />
 	<div class="shell">
-		<Sidebar />
+		<Sidebar isAdmin={data.isAdmin ?? false} />
 		<main class:full-bleed={$page.url.pathname.startsWith('/charts')}>{@render children()}</main>
 	</div>
 	<BottomNav />
