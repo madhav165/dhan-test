@@ -20,6 +20,7 @@ import (
 	"github.com/madhav165/dhan-test/go/internal/market"
 	"github.com/madhav165/dhan-test/go/internal/nifty500"
 	"github.com/madhav165/dhan-test/go/internal/ohlcv"
+	"github.com/madhav165/dhan-test/go/internal/ratelimit"
 	"github.com/madhav165/dhan-test/go/internal/result"
 	"github.com/madhav165/dhan-test/go/internal/run"
 	"github.com/madhav165/dhan-test/go/internal/telegram"
@@ -75,19 +76,19 @@ func main() {
 		go bot.PollForever()
 	}
 
-	runWorker := &run.Worker{DB: database, EncKey: key, DhanBaseURL: os.Getenv("DHAN_BASE_URL")}
-	go runWorker.Start()
+	// Shared per-user rate limiter for Dhan data APIs (5 req/s)
+	dataRL := ratelimit.NewStore(rate.Every(time.Second/5), 5)
 
-	// Shared rate limiter for Dhan data APIs (5 req/s)
-	dataRL := rate.NewLimiter(rate.Every(time.Second/5), 5)
+	runWorker := &run.Worker{DB: database, EncKey: key, DhanBaseURL: os.Getenv("DHAN_BASE_URL"), DataRL: dataRL}
+	go runWorker.Start()
 
 	ih := &instrument.Handler{DB: database}
 	mh := market.NewHandler(database, key, os.Getenv("DHAN_BASE_URL"))
-	ch := &chart.Handler{DB: database, EncryptionKey: key, DhanBaseURL: os.Getenv("DHAN_BASE_URL"), Limiter: dataRL}
+	ch := &chart.Handler{DB: database, EncryptionKey: key, DhanBaseURL: os.Getenv("DHAN_BASE_URL"), DataRL: dataRL}
 	lh := live.NewHandler(database, key)
 	nh := &nifty500.Handler{DB: database}
 
-	ohlcvWorker := &ohlcv.Worker{DB: database, EncKey: key, DhanBaseURL: os.Getenv("DHAN_BASE_URL"), Limiter: dataRL}
+	ohlcvWorker := &ohlcv.Worker{DB: database, EncKey: key, DhanBaseURL: os.Getenv("DHAN_BASE_URL"), DataRL: dataRL}
 	go ohlcvWorker.Start()
 	rh, err := result.NewHandler(database)
 	if err != nil {

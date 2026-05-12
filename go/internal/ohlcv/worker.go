@@ -10,7 +10,7 @@ import (
 
 	"github.com/madhav165/dhan-test/go/internal/broker"
 	"github.com/madhav165/dhan-test/go/internal/candles"
-	"golang.org/x/time/rate"
+	"github.com/madhav165/dhan-test/go/internal/ratelimit"
 )
 
 type stock struct{ secID, seg string }
@@ -19,7 +19,7 @@ type Worker struct {
 	DB          *sql.DB
 	EncKey      []byte
 	DhanBaseURL string
-	Limiter     *rate.Limiter
+	DataRL      *ratelimit.Store
 }
 
 func (w *Worker) Start() {
@@ -115,9 +115,9 @@ func (w *Worker) runOnce(userID string) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for s := range jobs {
-				w.processStock(s, clientID, accessToken)
-			}
+		for s := range jobs {
+			w.processStock(s, clientID, accessToken, userID)
+		}
 		}()
 	}
 
@@ -142,7 +142,7 @@ func (w *Worker) runOnce(userID string) {
 	log.Printf("ohlcv: completed run for %d stocks", len(stocks))
 }
 
-func (w *Worker) processStock(s stock, clientID, accessToken string) {
+func (w *Worker) processStock(s stock, clientID, accessToken, userID string) {
 	ctx := context.Background()
 
 	// Determine date range
@@ -172,7 +172,7 @@ func (w *Worker) processStock(s stock, clientID, accessToken string) {
 		log.Printf("ohlcv: incremental for %s %s %s–%s", s.secID, s.seg, fromDate, toDate)
 	}
 
-	if err := candles.FetchAndStore(ctx, w.DB, w.DhanBaseURL, clientID, accessToken, s.secID, s.seg, "1d", fromDate, toDate, w.Limiter); err != nil {
+	if err := candles.FetchAndStore(ctx, w.DB, w.DhanBaseURL, clientID, accessToken, s.secID, s.seg, "1d", fromDate, toDate, w.DataRL.Get(userID)); err != nil {
 		log.Printf("ohlcv: fetch failed for %s: %v", s.secID, err)
 		w.markDone(s.secID, s.seg, err.Error())
 		return
