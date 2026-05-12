@@ -85,7 +85,7 @@ func (w *Worker) resetOrphanedJobs() {
 	res2, err := w.DB.Exec(`
 		update ohlcv_jobs
 		set status = 'pending',
-		    retry_after = now() + interval '2 seconds',
+		    retry_after = now() + interval '500 milliseconds',
 		    updated_at = now()
 		where status = 'running'`)
 	if err != nil {
