@@ -25,6 +25,10 @@
 	<h1>Admin</h1>
 </div>
 
+<nav class="admin-nav">
+	<a href="/admin/ohlcv">OHLCV stocks</a>
+</nav>
+
 <section>
 	<h2>OHLCV Jobs</h2>
 	<table>
@@ -130,4 +134,26 @@
 	tr.failed td, tr.rate-limited td { color: var(--red); }
 	tr.pending td { color: var(--text-subtle); }
 	tr.no-data td { color: var(--text-muted); }
+
+	.admin-nav {
+		display: flex;
+		gap: 12px;
+		margin-bottom: 24px;
+	}
+
+	.admin-nav a {
+		background: var(--bg-surface);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		color: var(--text-subtle);
+		font-size: 13px;
+		padding: 6px 14px;
+		text-decoration: none;
+		transition: border-color 0.15s, color 0.15s;
+	}
+
+	.admin-nav a:hover {
+		border-color: var(--accent);
+		color: var(--text);
+	}
 </style>
