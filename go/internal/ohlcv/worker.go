@@ -28,6 +28,9 @@ func (w *Worker) Start() {
 		return
 	}
 
+	// Reset any orphaned running jobs from previous restart
+	w.resetOrphanedJobs()
+
 	// Run immediately on boot if needed, then schedule daily
 	w.createJobs(userID)
 
@@ -53,6 +56,18 @@ func next4PMIST() time.Duration {
 		next = next.Add(24 * time.Hour)
 	}
 	return time.Until(next)
+}
+
+func (w *Worker) resetOrphanedJobs() {
+	res, err := w.DB.Exec(`update ohlcv_jobs set status = 'pending', updated_at = now() where status = 'running'`)
+	if err != nil {
+		log.Printf("ohlcv: failed to reset orphaned jobs: %v", err)
+		return
+	}
+	count, _ := res.RowsAffected()
+	if count > 0 {
+		log.Printf("ohlcv: reset %d orphaned running jobs to pending", count)
+	}
 }
 
 func (w *Worker) createJobs(userID string) {
