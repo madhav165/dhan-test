@@ -173,6 +173,7 @@ func (w *Worker) workerLoop(userID string, sem chan struct{}) {
 
 		w.processJob(job, userID)
 		<-sem // release slot
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
