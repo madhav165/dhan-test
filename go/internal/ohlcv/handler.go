@@ -78,10 +78,7 @@ type StockRow struct {
 	Industry    string `json:"industry"`
 	StartDate   string `json:"start_date"`
 	EndDate     string `json:"end_date"`
-	Chunks      int    `json:"chunks"`
-	Done        int    `json:"done"`
-	Pending     int    `json:"pending"`
-	Failed      int    `json:"failed"`
+	Candles     int    `json:"candles"`
 }
 
 type StocksResponse struct {
@@ -125,13 +122,13 @@ func (w *Worker) HandleStocks(rw http.ResponseWriter, r *http.Request) {
 	baseQuery := `
 		from nifty500_constituents n
 		join instruments i on (i.trading_symbol = n.symbol or i.custom_symbol = n.symbol)
-		join ohlcv_jobs j on j.security_id = i.security_id and j.exchange_segment = 'NSE_E'
+		join candles c on c.security_id = i.security_id and c.exchange_segment = 'NSE_E' and c.interval = '1d'
 		` + where + `
 		group by n.symbol, n.company_name, n.industry`
 
 	// Total count
-	var total int
 	countArgs := append([]any{}, args...)
+	var total int
 	if err := w.DB.QueryRow(`select count(*) from (select n.symbol `+baseQuery+`) t`, countArgs...).Scan(&total); err != nil {
 		http.Error(rw, "DB error", http.StatusInternalServerError)
 		return
@@ -143,11 +140,8 @@ func (w *Worker) HandleStocks(rw http.ResponseWriter, r *http.Request) {
 	offsetIdx := strconv.Itoa(len(pageArgs))
 	rows, err := w.DB.Query(`
 		select n.symbol, n.company_name, coalesce(n.industry, ''),
-		       min(j.from_date)::text, max(j.to_date)::text,
-		       count(*)::int,
-		       count(*) filter (where j.status = 'done')::int,
-		       count(*) filter (where j.status = 'pending')::int,
-		       count(*) filter (where j.status = 'failed')::int
+		       min(c.timestamp)::date::text, max(c.timestamp)::date::text,
+		       count(*)::int
 		`+baseQuery+`
 		order by n.symbol
 		limit $`+limitIdx+` offset $`+offsetIdx,
@@ -162,7 +156,7 @@ func (w *Worker) HandleStocks(rw http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var s StockRow
 		if err := rows.Scan(&s.Symbol, &s.CompanyName, &s.Industry,
-			&s.StartDate, &s.EndDate, &s.Chunks, &s.Done, &s.Pending, &s.Failed); err != nil {
+			&s.StartDate, &s.EndDate, &s.Candles); err != nil {
 			continue
 		}
 		stocks = append(stocks, s)

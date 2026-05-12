@@ -59,10 +59,7 @@
 				<th>Industry</th>
 				<th>Start date</th>
 				<th>End date</th>
-				<th class="num">Chunks</th>
-				<th class="num">Done</th>
-				<th class="num">Pending</th>
-				<th class="num">Failed</th>
+				<th class="num">Candles</th>
 			</tr>
 		</thead>
 		<tbody>
@@ -73,10 +70,7 @@
 					<td class="industry">{s.industry}</td>
 					<td>{s.start_date}</td>
 					<td>{s.end_date}</td>
-					<td class="num">{s.chunks}</td>
-					<td class="num done">{s.done}</td>
-					<td class="num">{s.pending}</td>
-					<td class="num" class:red={s.failed > 0}>{s.failed}</td>
+					<td class="num">{s.candles.toLocaleString()}</td>
 				</tr>
 			{/each}
 		</tbody>
