@@ -243,6 +243,7 @@ func (w *Worker) claimJob() *job {
 		where id = (
 			select id from ohlcv_jobs
 			where status = 'pending'
+			  and (retry_after is null or retry_after <= now())
 			order by created_at
 			for update skip locked
 			limit 1
@@ -288,11 +289,17 @@ func (w *Worker) failJob(jobID, errMsg string) {
 		return
 	}
 
-	// Retryable: 429, 5xx, network errors — set back to pending for re-queue
+	// Retryable: 429, 5xx, network errors — set back to pending with backoff
+	// 429s get a longer backoff (10s) to let Dhan's rate limit window reset.
+	backoff := "now() + interval '2 seconds'"
+	if strings.Contains(errMsg, "status 429") {
+		backoff = "now() + interval '10 seconds'"
+	}
 	w.DB.Exec(`
 		update ohlcv_jobs
 		set status = case when retry_count >= max_retries then 'failed' else 'pending' end,
 		    error = case when retry_count >= max_retries then $1 else null end,
+		    retry_after = case when retry_count >= max_retries then null else `+backoff+` end,
 		    retry_count = retry_count + 1,
 		    updated_at = now()
 		where id = $2
