@@ -93,11 +93,11 @@ func (w *Worker) createJobs(userID string) {
 		return
 	}
 
-	// TEMP: test with first stock only
-	if len(stocks) > 0 {
-		w.createJobsForStock(stocks[0].secID, stocks[0].seg)
-		log.Printf("ohlcv: created jobs for 1 stock (TEST MODE)")
+	for _, s := range stocks {
+		w.createJobsForStock(s.secID, s.seg)
 	}
+
+	log.Printf("ohlcv: created jobs for %d stocks", len(stocks))
 }
 
 func (w *Worker) createJobsForStock(secID, seg string) {
