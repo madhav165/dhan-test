@@ -59,14 +59,35 @@ func next4PMIST() time.Duration {
 }
 
 func (w *Worker) resetOrphanedJobs() {
-	res, err := w.DB.Exec(`update ohlcv_jobs set status = 'pending', updated_at = now() where status = 'running'`)
+	// Delete orphaned running jobs that already have a pending counterpart
+	res1, err := w.DB.Exec(`
+		delete from ohlcv_jobs o1
+		where status = 'running'
+		and exists (
+			select 1 from ohlcv_jobs o2
+			where o2.status = 'pending'
+			and o2.security_id = o1.security_id
+			and o2.exchange_segment = o1.exchange_segment
+			and o2.from_date = o1.from_date
+			and o2.to_date = o1.to_date
+		)
+	`)
+	if err != nil {
+		log.Printf("ohlcv: failed to delete duplicate orphaned jobs: %v", err)
+		return
+	}
+	deleted, _ := res1.RowsAffected()
+
+	// Reset remaining orphaned running jobs to pending
+	res2, err := w.DB.Exec(`update ohlcv_jobs set status = 'pending', updated_at = now() where status = 'running'`)
 	if err != nil {
 		log.Printf("ohlcv: failed to reset orphaned jobs: %v", err)
 		return
 	}
-	count, _ := res.RowsAffected()
-	if count > 0 {
-		log.Printf("ohlcv: reset %d orphaned running jobs to pending", count)
+	reset, _ := res2.RowsAffected()
+
+	if deleted > 0 || reset > 0 {
+		log.Printf("ohlcv: cleaned up %d duplicate + %d orphaned running jobs", deleted, reset)
 	}
 }
 
