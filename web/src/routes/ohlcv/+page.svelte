@@ -14,7 +14,7 @@
 		if (q)        params.set('q', q)
 		if (industry) params.set('industry', industry)
 		if (newPage > 1) params.set('page', String(newPage))
-		goto(`/admin/ohlcv?${params}`, { keepFocus: true })
+		goto(`/ohlcv?${params}`, { keepFocus: true })
 	}
 
 	function onSearch() {

@@ -92,12 +92,6 @@ type StocksResponse struct {
 const pageSize = 50
 
 func (w *Worker) HandleStocks(rw http.ResponseWriter, r *http.Request) {
-	adminUserID := os.Getenv("OHLCV_USER_ID")
-	if r.Header.Get("X-User-ID") != adminUserID {
-		http.Error(rw, "Forbidden", http.StatusForbidden)
-		return
-	}
-
 	q := r.URL.Query().Get("q")
 	industry := r.URL.Query().Get("industry")
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
@@ -194,5 +188,5 @@ func (w *Worker) HandleStocks(rw http.ResponseWriter, r *http.Request) {
 
 func (w *Worker) RegisterAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/ohlcv", w.HandleStats)
-	mux.HandleFunc("GET /admin/ohlcv/stocks", w.HandleStocks)
+	mux.HandleFunc("GET /ohlcv/stocks", w.HandleStocks)
 }
