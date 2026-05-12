@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/madhav165/dhan-test/go/internal/broker"
@@ -111,7 +112,8 @@ func (w *Worker) createJobsForStock(secID, seg string) {
 	var fromDate, toDate string
 
 	if !maxDate.Valid {
-		fromDate = time.Now().AddDate(-10, 0, 0).Format("2006-01-02")
+		// TEMP: test with 1000 days
+		fromDate = time.Now().AddDate(0, 0, -1000).Format("2006-01-02")
 		toDate = today
 	} else {
 		fromDate = maxDate.Time.Format("2006-01-02")
@@ -227,6 +229,18 @@ func (w *Worker) processJob(j *job, userID string) {
 }
 
 func (w *Worker) failJob(jobID, errMsg string) {
+	// Non-retryable: 400 errors (no data, bad input) — don't waste retries
+	if strings.Contains(errMsg, "status 400") || strings.Contains(errMsg, "Input_Exception") {
+		w.DB.Exec(`
+			update ohlcv_jobs
+			set status = 'failed', error = $1, updated_at = now()
+			where id = $2
+		`, errMsg, jobID)
+		log.Printf("ohlcv: job %s permanently failed (no data)", jobID)
+		return
+	}
+
+	// Retryable: 429, 5xx, network errors — set back to pending for re-queue
 	w.DB.Exec(`
 		update ohlcv_jobs
 		set status = case when retry_count >= max_retries then 'failed' else 'pending' end,
