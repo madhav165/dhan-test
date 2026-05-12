@@ -200,6 +200,16 @@ func (w *Worker) workerLoop(userID string, sem chan struct{}) {
 	for {
 		sem <- struct{}{} // acquire slot
 
+		// Wait for a rate-limit token BEFORE claiming a job, so we don't
+		// mark a job as 'running' and then stall waiting for budget.
+		if limiter := w.DataRL.Get(userID); limiter != nil {
+			if err := limiter.Wait(context.Background()); err != nil {
+				<-sem
+				time.Sleep(5 * time.Second)
+				continue
+			}
+		}
+
 		job := w.claimJob()
 		if job == nil {
 			<-sem // release slot
@@ -254,7 +264,7 @@ func (w *Worker) processJob(j *job, userID string) {
 	}
 
 	log.Printf("ohlcv: processing job %s %s %s–%s", j.securityID, j.exchangeSegment, j.fromDate, j.toDate)
-	if err := candles.FetchChunk(ctx, w.DB, w.DhanBaseURL, clientID, accessToken, j.securityID, j.exchangeSegment, j.interval, j.fromDate, j.toDate, w.DataRL.Get(userID)); err != nil {
+	if err := candles.FetchChunk(ctx, w.DB, w.DhanBaseURL, clientID, accessToken, j.securityID, j.exchangeSegment, j.interval, j.fromDate, j.toDate); err != nil {
 		log.Printf("ohlcv: job %s failed: %v", j.id, err)
 		w.failJob(j.id, err.Error())
 		return

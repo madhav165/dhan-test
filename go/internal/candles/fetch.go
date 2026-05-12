@@ -144,16 +144,10 @@ func FetchAndStore(ctx context.Context, db *sql.DB, dhanBaseURL, clientID, acces
 	return nil
 }
 
-func FetchChunk(ctx context.Context, db *sql.DB, dhanBaseURL, clientID, accessToken, secID, seg, interval, fromDate, toDate string, limiter *rate.Limiter, updateOnConflict ...bool) error {
+func FetchChunk(ctx context.Context, db *sql.DB, dhanBaseURL, clientID, accessToken, secID, seg, interval, fromDate, toDate string, updateOnConflict ...bool) error {
 	doUpdate := len(updateOnConflict) > 0 && updateOnConflict[0]
 	dhanSeg, instrType := MapSegment(seg)
 	mins := IntervalMinutes(interval)
-
-	if limiter != nil {
-		if err := limiter.Wait(ctx); err != nil {
-			return fmt.Errorf("rate limit wait: %w", err)
-		}
-	}
 
 	var body []byte
 	var endpoint string
