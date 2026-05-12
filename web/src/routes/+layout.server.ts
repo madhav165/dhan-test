@@ -1,5 +1,6 @@
 import { redirect } from '@sveltejs/kit'
 import { db } from '$lib/server/db'
+import { OHLCV_USER_ID } from '$env/static/private'
 import type { LayoutServerLoad } from './$types'
 
 export const load: LayoutServerLoad = async ({ locals, url }) => {
@@ -17,5 +18,7 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
 		brokerConnected = result.rows[0]?.is_active === true
 	}
 
-	return { user: locals.user, brokerConnected }
+	const isAdmin = locals.user?.id === OHLCV_USER_ID
+
+	return { user: locals.user, brokerConnected, isAdmin }
 }

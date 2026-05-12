@@ -91,6 +91,7 @@ func main() {
 
 	ohlcvWorker := &ohlcv.Worker{DB: database, EncKey: key, DhanBaseURL: os.Getenv("DHAN_BASE_URL"), DataRL: dataRL}
 	go ohlcvWorker.Start()
+
 	rh, err := result.NewHandler(database)
 	if err != nil {
 		log.Fatalf("result handler: %v", err)
@@ -104,6 +105,7 @@ func main() {
 	lh.RegisterRoutes(mux)
 	nh.RegisterRoutes(mux)
 	rh.RegisterRoutes(mux)
+	ohlcvWorker.RegisterAdminRoutes(mux)
 
 	port := os.Getenv("GO_PORT")
 	if port == "" {
