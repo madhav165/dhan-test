@@ -85,11 +85,11 @@ func (w *Worker) createJobs(userID string) {
 		return
 	}
 
-	for _, s := range stocks {
-		w.createJobsForStock(s.secID, s.seg)
+	// TEMP: test with first stock only
+	if len(stocks) > 0 {
+		w.createJobsForStock(stocks[0].secID, stocks[0].seg)
+		log.Printf("ohlcv: created jobs for 1 stock (TEST MODE)")
 	}
-
-	log.Printf("ohlcv: created jobs for %d stocks", len(stocks))
 }
 
 func (w *Worker) createJobsForStock(secID, seg string) {
@@ -104,7 +104,8 @@ func (w *Worker) createJobsForStock(secID, seg string) {
 	var fromDate, toDate string
 
 	if !maxDate.Valid {
-		fromDate = time.Now().AddDate(-10, 0, 0).Format("2006-01-02")
+		// TEMP: test with 200 days instead of 10 years
+		fromDate = time.Now().AddDate(0, 0, -200).Format("2006-01-02")
 		toDate = today
 	} else {
 		fromDate = maxDate.Time.Format("2006-01-02")
