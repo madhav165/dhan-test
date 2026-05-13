@@ -112,7 +112,7 @@ func (w *Worker) processRunJob(jobID, runID, interval, fromDate, toDate, userID 
 		w.DB.QueryRow(`
 			select count(*) from candles
 			where security_id=$1 and exchange_segment=$2 and interval=$3
-			and timestamp::date between $4::date and $5::date`,
+			and (timestamp at time zone 'Asia/Kolkata')::date between $4::date and $5::date`,
 			i.secID, i.seg, interval, fromDate, toDate,
 		).Scan(&count)
 
@@ -160,7 +160,7 @@ func (w *Worker) processRLJob(jobID, strategyID string, rlConfigRaw []byte, user
 	w.DB.QueryRow(`
 		select count(*) from candles
 		where security_id=$1 and exchange_segment=$2 and interval=$3
-		and timestamp::date between $4::date and $5::date`,
+		and (timestamp at time zone 'Asia/Kolkata')::date between $4::date and $5::date`,
 		secID, seg, interval, trainFrom, trainTo,
 	).Scan(&count)
 

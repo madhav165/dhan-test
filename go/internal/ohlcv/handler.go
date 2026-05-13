@@ -134,7 +134,7 @@ func (w *Worker) HandleStocks(rw http.ResponseWriter, r *http.Request) {
 	offsetIdx := strconv.Itoa(len(pageArgs))
 	rows, err := w.DB.Query(`
 		select n.symbol, n.company_name, coalesce(n.industry, ''),
-		       min(c.timestamp)::date::text, max(c.timestamp)::date::text,
+		       min(c.timestamp at time zone 'Asia/Kolkata')::date::text, max(c.timestamp at time zone 'Asia/Kolkata')::date::text,
 		       count(*)::int
 		`+baseQuery+`
 		order by n.symbol

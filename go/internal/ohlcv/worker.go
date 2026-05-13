@@ -177,7 +177,7 @@ func (w *Worker) createJobsForStock(secID, seg string) {
 		fromDate = nowIST.AddDate(-10, 0, 0).Format("2006-01-02")
 		toDate = yesterday
 	} else {
-		fromDate = maxDate.Time.Format("2006-01-02")
+		fromDate = maxDate.Time.In(ist).Format("2006-01-02")
 		if fromDate >= yesterday {
 			return // up to date
 		}

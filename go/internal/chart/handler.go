@@ -58,21 +58,22 @@ func (h *Handler) Candles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	today := time.Now().Format("2006-01-02")
+	ist := time.FixedZone("Asia/Kolkata", 5*60*60+30*60)
+	today := time.Now().In(ist).Format("2006-01-02")
 
 	// cold cache: fetch full range if no data exists
 	var count int
 	h.DB.QueryRowContext(r.Context(), `
 		select count(*) from candles
 		where security_id=$1 and exchange_segment=$2 and interval=$3
-		and timestamp::date between $4::text::date and $5::text::date`,
+		and (timestamp at time zone 'Asia/Kolkata')::date between $4::text::date and $5::text::date`,
 		securityID, exchangeSegment, interval, from, to,
 	).Scan(&count)
 
 	// Fetch any missing data before the earliest stored candle in the requested range.
 	var minDate string
 	h.DB.QueryRowContext(r.Context(), `
-		select min(timestamp::date)::text from candles
+		select min(timestamp at time zone 'Asia/Kolkata')::date::text from candles
 		where security_id=$1 and exchange_segment=$2 and interval=$3`,
 		securityID, exchangeSegment, interval,
 	).Scan(&minDate)
@@ -95,7 +96,7 @@ func (h *Handler) Candles(w http.ResponseWriter, r *http.Request) {
 		// Refresh from the last stored candle date so gaps from multi-day absences are filled.
 		var maxDate string
 		h.DB.QueryRowContext(r.Context(), `
-			select max(timestamp::date)::text from candles
+			select max(timestamp at time zone 'Asia/Kolkata')::date::text from candles
 			where security_id=$1 and exchange_segment=$2 and interval=$3`,
 			securityID, exchangeSegment, interval,
 		).Scan(&maxDate)
@@ -113,7 +114,7 @@ func (h *Handler) Candles(w http.ResponseWriter, r *http.Request) {
 		`select extract(epoch from timestamp)::bigint, open, high, low, close, volume, coalesce(oi, 0)
 		 from candles
 		 where security_id=$1 and exchange_segment=$2 and interval=$3
-		 and timestamp::date between $4::text::date and $5::text::date
+		 and (timestamp at time zone 'Asia/Kolkata')::date between $4::text::date and $5::text::date
 		 order by timestamp`,
 		securityID, exchangeSegment, interval, from, to,
 	)
