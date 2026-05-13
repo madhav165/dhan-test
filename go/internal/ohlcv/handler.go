@@ -189,8 +189,19 @@ func (w *Worker) HandleStocks(rw http.ResponseWriter, r *http.Request) {
 func (w *Worker) RegisterAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/ohlcv", w.HandleStats)
 	mux.HandleFunc("GET /admin/ohlcv/ws", w.HandleStatusWS)
+	mux.HandleFunc("POST /admin/ohlcv/trigger", w.HandleAdminTrigger)
 	mux.HandleFunc("GET /ohlcv/stocks", w.HandleStocks)
 	mux.HandleFunc("POST /internal/ohlcv-trigger", w.HandleTrigger)
+}
+
+func (w *Worker) HandleAdminTrigger(rw http.ResponseWriter, r *http.Request) {
+	adminUserID := os.Getenv("OHLCV_USER_ID")
+	if r.Header.Get("X-User-ID") != adminUserID {
+		http.Error(rw, "Forbidden", http.StatusForbidden)
+		return
+	}
+	go w.createJobs(adminUserID)
+	rw.WriteHeader(http.StatusNoContent)
 }
 
 func (w *Worker) HandleTrigger(rw http.ResponseWriter, r *http.Request) {

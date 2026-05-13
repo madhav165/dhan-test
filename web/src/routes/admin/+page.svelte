@@ -26,6 +26,23 @@
 	}
 
 	let ws: WebSocket | null = null
+	let triggering = $state(false)
+	let triggerError = $state<string | null>(null)
+
+	async function triggerRefresh() {
+		triggering = true
+		triggerError = null
+		try {
+			const resp = await fetch('/admin/ohlcv/trigger', { method: 'POST' })
+			if (!resp.ok) {
+				triggerError = 'Failed to trigger refresh'
+			}
+		} catch {
+			triggerError = 'Network error'
+		} finally {
+			triggering = false
+		}
+	}
 
 	function connect() {
 		if (!data.goWsUrl || !data.wsToken) return
@@ -73,6 +90,15 @@
 		<span class="badge idle">idle</span>
 	{:else}
 		<span class="badge connecting">connecting</span>
+	{/if}
+</div>
+
+<div class="trigger-row">
+	<button type="button" class="trigger-btn" disabled={triggering || summary.running > 0} onclick={triggerRefresh}>
+		{triggering ? 'Starting...' : summary.running > 0 ? 'Jobs Running...' : 'Refresh OHLCV'}
+	</button>
+	{#if triggerError}
+		<span class="trigger-error">{triggerError}</span>
 	{/if}
 </div>
 
@@ -144,6 +170,40 @@
 		font-size: 20px;
 		font-weight: 600;
 		margin: 0;
+	}
+
+	.trigger-btn {
+		font-size: 13px;
+		font-weight: 500;
+		padding: 8px 16px;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		background: var(--bg-surface);
+		color: var(--text);
+		cursor: pointer;
+		transition: background 0.15s ease, opacity 0.15s ease;
+	}
+
+	.trigger-btn:hover:not(:disabled) {
+		background: var(--accent)11;
+		border-color: var(--accent);
+	}
+
+	.trigger-btn:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+
+	.trigger-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		margin-bottom: 24px;
+	}
+
+	.trigger-error {
+		font-size: 13px;
+		color: var(--red);
 	}
 
 	.badge {
