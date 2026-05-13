@@ -1,4 +1,4 @@
-create table run_jobs (
+create table if not exists run_jobs (
   id          uuid primary key default gen_random_uuid(),
   run_id      uuid references backtest_runs(id) on delete cascade,
   status      text not null default 'pending',  -- pending / running / done / failed
@@ -7,4 +7,4 @@ create table run_jobs (
   updated_at  timestamptz default now()
 );
 
-create index idx_run_jobs_status on run_jobs (status, created_at);
+create index if not exists idx_run_jobs_status on run_jobs (status, created_at);

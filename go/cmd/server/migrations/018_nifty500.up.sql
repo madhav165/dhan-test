@@ -1,4 +1,4 @@
-create table nifty500_constituents (
+create table if not exists nifty500_constituents (
   symbol       text primary key,
   company_name text not null,
   industry     text,
@@ -7,4 +7,4 @@ create table nifty500_constituents (
   last_synced  timestamptz default now()
 );
 
-create index idx_nifty500_industry on nifty500_constituents(industry);
+create index if not exists idx_nifty500_industry on nifty500_constituents(industry);

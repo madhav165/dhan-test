@@ -1,4 +1,4 @@
-create table candles (
+create table if not exists candles (
   security_id      text        not null,
   exchange_segment text        not null,
   interval         text        not null,
@@ -11,9 +11,9 @@ create table candles (
   primary key (security_id, exchange_segment, interval, timestamp)
 );
 
-create index idx_candles_lookup on candles (security_id, exchange_segment, interval, timestamp desc);
+create index if not exists idx_candles_lookup on candles (security_id, exchange_segment, interval, timestamp desc);
 
-create table strategies (
+create table if not exists strategies (
   id         uuid primary key default gen_random_uuid(),
   user_id    uuid references users(id) on delete cascade,
   name       text not null,
@@ -22,9 +22,9 @@ create table strategies (
   created_at timestamptz default now()
 );
 
-create index idx_strategies_user on strategies (user_id);
+create index if not exists idx_strategies_user on strategies (user_id);
 
-create table backtest_runs (
+create table if not exists backtest_runs (
   id          uuid primary key default gen_random_uuid(),
   strategy_id uuid references strategies(id) on delete cascade,
   interval    text not null,
@@ -38,16 +38,16 @@ create table backtest_runs (
   max_drawdown numeric
 );
 
-create index idx_backtest_runs_strategy on backtest_runs (strategy_id);
+create index if not exists idx_backtest_runs_strategy on backtest_runs (strategy_id);
 
-create table backtest_run_instruments (
+create table if not exists backtest_run_instruments (
   run_id           uuid references backtest_runs(id) on delete cascade,
   security_id      text not null,
   exchange_segment text not null,
   primary key (run_id, security_id, exchange_segment)
 );
 
-create table policies (
+create table if not exists policies (
   id          uuid primary key default gen_random_uuid(),
   strategy_id uuid references strategies(id) on delete cascade,
   mode        text not null,  -- alert / trade
@@ -55,16 +55,16 @@ create table policies (
   created_at  timestamptz default now()
 );
 
-create index idx_policies_strategy on policies (strategy_id);
+create index if not exists idx_policies_strategy on policies (strategy_id);
 
-create table policy_instruments (
+create table if not exists policy_instruments (
   policy_id        uuid references policies(id) on delete cascade,
   security_id      text not null,
   exchange_segment text not null,
   primary key (policy_id, security_id, exchange_segment)
 );
 
-create table live_signals (
+create table if not exists live_signals (
   id           uuid primary key default gen_random_uuid(),
   policy_id    uuid references policies(id) on delete cascade,
   security_id  text        not null,
@@ -73,4 +73,4 @@ create table live_signals (
   price        numeric     not null
 );
 
-create index idx_live_signals_policy on live_signals (policy_id, triggered_at desc);
+create index if not exists idx_live_signals_policy on live_signals (policy_id, triggered_at desc);

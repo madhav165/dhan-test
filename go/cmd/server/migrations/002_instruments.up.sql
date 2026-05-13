@@ -1,4 +1,4 @@
-create table instruments (
+create table if not exists instruments (
   security_id      text not null,
   exchange_segment text not null,
   trading_symbol   text not null,
@@ -11,6 +11,6 @@ create table instruments (
   primary key (security_id, exchange_segment)
 );
 
-create index idx_instruments_symbol on instruments(trading_symbol);
-create index idx_instruments_custom_symbol on instruments(custom_symbol);
-create index idx_instruments_segment on instruments(exchange_segment);
+create index if not exists idx_instruments_symbol on instruments(trading_symbol);
+create index if not exists idx_instruments_custom_symbol on instruments(custom_symbol);
+create index if not exists idx_instruments_segment on instruments(exchange_segment);

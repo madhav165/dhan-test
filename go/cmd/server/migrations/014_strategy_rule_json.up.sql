@@ -1,1 +1,1 @@
-alter table strategies add column rule_json jsonb;
+alter table strategies add column if not exists rule_json jsonb;

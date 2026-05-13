@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -51,8 +52,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("migrate init: %v", err)
 	}
+
 	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-		log.Fatalf("migrate up: %v", err)
+		if strings.Contains(err.Error(), "Dirty migration:") {
+			log.Printf("found dirty migration, forcing clean: %v", err)
+			if fErr := m.Force(0); fErr != nil {
+				log.Fatalf("migrate force: %v", fErr)
+			}
+			if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+				log.Fatalf("migrate up: %v", err)
+			}
+		} else {
+			log.Fatalf("migrate up: %v", err)
+		}
 	}
 	log.Println("migrations up to date")
 

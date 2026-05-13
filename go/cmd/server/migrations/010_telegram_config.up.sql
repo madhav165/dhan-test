@@ -1,1 +1,1 @@
-alter table users add column telegram_chat_id text;
+alter table users add column if not exists telegram_chat_id text;

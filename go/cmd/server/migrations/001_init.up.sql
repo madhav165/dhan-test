@@ -1,11 +1,11 @@
-create table users (
+create table if not exists users (
   id         uuid primary key default gen_random_uuid(),
   email      text unique not null,
   name       text,
   created_at timestamptz default now()
 );
 
-create table broker_connections (
+create table if not exists broker_connections (
   id              uuid primary key default gen_random_uuid(),
   user_id         uuid references users(id) on delete cascade,
   broker          text not null,
@@ -17,5 +17,5 @@ create table broker_connections (
   unique(user_id, broker)
 );
 
-create index idx_users_email on users(email);
-create index idx_broker_connections_user on broker_connections(user_id);
+create index if not exists idx_users_email on users(email);
+create index if not exists idx_broker_connections_user on broker_connections(user_id);
