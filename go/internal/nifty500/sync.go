@@ -69,7 +69,7 @@ func downloadAndSync(db *sql.DB) error {
 	// Archive current live constituents into snapshots before wiping
 	if _, err := tx.Exec(`
 		insert into nifty500_snapshots (snapshot_date, symbol, company_name, industry, series, isin)
-		select current_date, symbol, company_name, industry, series, isin
+		select current_date - interval '7 days', symbol, company_name, industry, series, isin
 		from nifty500_constituents
 		on conflict (symbol, snapshot_date) do update set
 			company_name = excluded.company_name,
