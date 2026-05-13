@@ -1,0 +1,5 @@
+# Exclude large artifacts from build context
+server
+*.test
+*.out
+vendor/
