@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/madhav165/dhan-test/go/internal/broker"
 	"github.com/madhav165/dhan-test/go/internal/candles"
 	"github.com/madhav165/dhan-test/go/internal/ratelimit"
@@ -281,6 +283,72 @@ func (w *Worker) processJob(j *job, userID string) {
 
 	w.DB.Exec(`update ohlcv_jobs set status = 'done', updated_at = now() where id = $1`, j.id)
 	log.Printf("ohlcv: job %s done", j.id)
+}
+
+var wsUpgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin:     func(r *http.Request) bool { return true },
+}
+
+type wsStatus struct {
+	Pending  int `json:"pending"`
+	Running  int `json:"running"`
+	Done     int `json:"done"`
+	Failed   int `json:"failed"`
+	Total    int `json:"total"`
+	Progress int `json:"progress"`
+}
+
+func (w *Worker) HandleStatusWS(rw http.ResponseWriter, r *http.Request) {
+	conn, err := wsUpgrader.Upgrade(rw, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 24*time.Hour)
+	defer cancel()
+
+	var prev wsStatus
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		var status wsStatus
+		if err := w.DB.QueryRow(`
+			select
+				sum(case when status = 'pending' then 1 else 0 end)::int,
+				sum(case when status = 'running' then 1 else 0 end)::int,
+				sum(case when status = 'done' then 1 else 0 end)::int,
+				sum(case when status = 'failed' then 1 else 0 end)::int,
+				count(*)::int
+			from ohlcv_jobs
+		`).Scan(&status.Pending, &status.Running, &status.Done, &status.Failed, &status.Total); err != nil {
+			return
+		}
+
+		if status.Total > 0 {
+			status.Progress = int(float64(status.Done) / float64(status.Total) * 100)
+		}
+
+		// Only send if something changed
+		if status != prev {
+			conn.WriteJSON(status)
+			prev = status
+		}
+
+		// Done when no pending or running jobs remain
+		if status.Pending == 0 && status.Running == 0 {
+			conn.WriteMessage(websocket.TextMessage, []byte(`{"done":true}`))
+			return
+		}
+
+		time.Sleep(2 * time.Second)
+	}
 }
 
 func (w *Worker) failJob(jobID, errMsg string) {

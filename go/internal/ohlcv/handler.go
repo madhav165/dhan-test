@@ -188,6 +188,7 @@ func (w *Worker) HandleStocks(rw http.ResponseWriter, r *http.Request) {
 
 func (w *Worker) RegisterAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/ohlcv", w.HandleStats)
+	mux.HandleFunc("GET /admin/ohlcv/ws", w.HandleStatusWS)
 	mux.HandleFunc("GET /ohlcv/stocks", w.HandleStocks)
 	mux.HandleFunc("POST /internal/ohlcv-trigger", w.HandleTrigger)
 }
