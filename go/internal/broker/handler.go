@@ -61,6 +61,7 @@ func (h *Handler) StoreToken(w http.ResponseWriter, r *http.Request) {
 
 	// Notify policy worker — non-fatal if it's not running
 	go notifyPolicyWorker(req.UserID)
+	go notifyOHLCVWorker()
 }
 
 func notifyPolicyWorker(userID string) {
@@ -69,6 +70,19 @@ func notifyPolicyWorker(userID string) {
 		port = "8082"
 	}
 	url := fmt.Sprintf("http://127.0.0.1:%s/internal/user-connected?user_id=%s", port, userID)
+	resp, err := http.Post(url, "", nil)
+	if err != nil || resp == nil {
+		return
+	}
+	resp.Body.Close()
+}
+
+func notifyOHLCVWorker() {
+	port := os.Getenv("GO_PORT")
+	if port == "" {
+		port = "8081"
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%s/internal/ohlcv-trigger", port)
 	resp, err := http.Post(url, "", nil)
 	if err != nil || resp == nil {
 		return
