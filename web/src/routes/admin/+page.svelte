@@ -1,7 +1,12 @@
 <script lang="ts">
 	let { data } = $props()
 
-	const { summary, failed } = data.stats
+	const { summary: initSummary, failed: initFailed } = data.stats
+
+	let summary = $state({ ...initSummary })
+	let failed = $state({ ...initFailed })
+	let isDone = $state(false)
+	let connected = $state(false)
 
 	const statusOrder = ['pending', 'running', 'done', 'failed']
 	const failedOrder = ['rate_limited', 'no_data', 'token_error', 'other']
@@ -19,11 +24,67 @@
 		token_error: 'Token error',
 		other: 'Other'
 	}
+
+	let ws: WebSocket | null = null
+
+	function connect() {
+		if (!data.goWsUrl || !data.wsToken) return
+		ws = new WebSocket(`${data.goWsUrl}/admin/ohlcv/ws?token=${data.wsToken}`)
+		connected = true
+
+		ws.onmessage = ({ data: raw }) => {
+			const msg = JSON.parse(raw)
+			if (msg.done === true) {
+				isDone = true
+				return
+			}
+			if (msg.pending !== undefined) {
+				summary = { ...msg }
+			}
+		}
+		ws.onclose = () => {
+			connected = false
+			if (!isDone) {
+				setTimeout(connect, 3000)
+			}
+		}
+		ws.onerror = () => {
+			connected = false
+		}
+	}
+
+	connect()
+
+	$effect(() => {
+		return () => {
+			ws?.close()
+		}
+	})
+
+	const total = summary.total || 0
+	const progress = total > 0 ? Math.round((summary.done || 0) / total * 100) : 0
 </script>
 
 <div class="header">
 	<h1>Admin</h1>
+	{#if connected}
+		<span class="badge live">live</span>
+	{:else if isDone}
+		<span class="badge idle">idle</span>
+	{:else}
+		<span class="badge connecting">connecting</span>
+	{/if}
 </div>
+
+{#if total > 0}
+	<section>
+		<h2>Progress</h2>
+		<div class="progress-bar">
+			<div class="progress-fill" style="width: {progress}%"></div>
+		</div>
+		<span class="progress-label">{summary.done || 0} / {total.toLocaleString()} ({progress}%)</span>
+	</section>
+{/if}
 
 <section>
 	<h2>OHLCV Jobs</h2>
@@ -75,6 +136,7 @@
 	.header {
 		display: flex;
 		align-items: center;
+		gap: 12px;
 		margin-bottom: 24px;
 	}
 
@@ -82,6 +144,36 @@
 		font-size: 20px;
 		font-weight: 600;
 		margin: 0;
+	}
+
+	.badge {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		padding: 2px 8px;
+		border-radius: 4px;
+	}
+
+	.badge.live {
+		color: var(--green);
+		background: var(--green)11;
+	}
+
+	.badge.idle {
+		color: var(--text-muted);
+		background: var(--text-muted)11;
+	}
+
+	.badge.connecting {
+		color: var(--accent);
+		background: var(--accent)11;
+		animation: pulse 1.5s ease-in-out infinite;
+	}
+
+	@keyframes pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.4; }
 	}
 
 	h2 {
@@ -100,6 +192,26 @@
 		margin-bottom: 24px;
 		padding: 20px;
 		max-width: 400px;
+	}
+
+	.progress-bar {
+		height: 6px;
+		background: var(--border);
+		border-radius: 3px;
+		overflow: hidden;
+		margin-bottom: 8px;
+	}
+
+	.progress-fill {
+		height: 100%;
+		background: var(--accent);
+		border-radius: 3px;
+		transition: width 0.3s ease;
+	}
+
+	.progress-label {
+		font-size: 12px;
+		color: var(--text-muted);
 	}
 
 	table {

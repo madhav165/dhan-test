@@ -2,7 +2,12 @@ package ohlcv
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -63,10 +68,19 @@ func next4PMIST() time.Duration {
 }
 
 func (w *Worker) resetOrphanedJobs() {
-	// Delete failed/running jobs that already have a pending counterpart
+	// Delete failed jobs — they've served their purpose and any missing
+	// ranges will be recreated by createJobs on boot.
+	res0, err := w.DB.Exec(`delete from ohlcv_jobs where status = 'failed'`)
+	if err != nil {
+		log.Printf("ohlcv: failed to delete failed jobs: %v", err)
+	} else if n, _ := res0.RowsAffected(); n > 0 {
+		log.Printf("ohlcv: cleaned up %d failed jobs", n)
+	}
+
+	// Delete running jobs that already have a pending counterpart
 	res1, err := w.DB.Exec(`
 		delete from ohlcv_jobs o1
-		where status in ('running', 'failed')
+		where status = 'running'
 		and exists (
 			select 1 from ohlcv_jobs o2
 			where o2.status = 'pending'
@@ -154,18 +168,20 @@ func (w *Worker) createJobsForStock(secID, seg string) {
 		where security_id = $1 and exchange_segment = $2 and interval = '1d'
 	`, secID, seg).Scan(&maxDate)
 
-	today := time.Now().Format("2006-01-02")
+	ist := time.FixedZone("Asia/Kolkata", 5*60*60+30*60)
+	nowIST := time.Now().In(ist)
+	yesterday := nowIST.AddDate(0, 0, -1).Format("2006-01-02")
 	var fromDate, toDate string
 
 	if !maxDate.Valid {
-		fromDate = time.Now().AddDate(-10, 0, 0).Format("2006-01-02")
-		toDate = today
+		fromDate = nowIST.AddDate(-10, 0, 0).Format("2006-01-02")
+		toDate = yesterday
 	} else {
 		fromDate = maxDate.Time.Format("2006-01-02")
-		if fromDate >= today {
+		if fromDate >= yesterday {
 			return // up to date
 		}
-		toDate = today
+		toDate = yesterday
 	}
 
 	// Split into 90-day chunks
@@ -300,7 +316,48 @@ type wsStatus struct {
 	Progress int `json:"progress"`
 }
 
+type wsTokenPayload struct {
+	U string `json:"u"`
+	X int64  `json:"x"`
+}
+
+func validateWSToken(token string, key []byte) (userID string, ok bool) {
+	dot := strings.LastIndexByte(token, '.')
+	if dot < 0 {
+		return
+	}
+	payload, sig := token[:dot], token[dot+1:]
+
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(payload))
+	if !hmac.Equal([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(sig)) {
+		return
+	}
+
+	raw, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		return
+	}
+	var p wsTokenPayload
+	if err := json.Unmarshal(raw, &p); err != nil || time.Now().Unix() > p.X {
+		return
+	}
+	return p.U, true
+}
+
 func (w *Worker) HandleStatusWS(rw http.ResponseWriter, r *http.Request) {
+	userID, ok := validateWSToken(r.URL.Query().Get("token"), w.EncKey)
+	if !ok {
+		http.Error(rw, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	adminUserID := os.Getenv("OHLCV_USER_ID")
+	if userID != adminUserID {
+		http.Error(rw, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	conn, err := wsUpgrader.Upgrade(rw, r, nil)
 	if err != nil {
 		return
