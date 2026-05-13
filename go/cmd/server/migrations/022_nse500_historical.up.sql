@@ -2019,12 +2019,6 @@ values
 
 create index idx_nifty500_snapshots_symbol on nifty500_snapshots(symbol);
 
-drop table if exists nifty500_20220504;
-drop table if exists nifty500_20221009;
-drop table if exists nifty500_20230404;
-drop table if exists nifty500_20240226;
-drop table if exists nse500_extended;
-
 create or replace view nse500_extended as
 select distinct on (symbol)
     symbol,
