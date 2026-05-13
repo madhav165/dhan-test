@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +32,27 @@ import (
 //go:embed migrations
 var migrationsFS embed.FS
 
+// extractDirtyVersion parses version from "Dirty database version 7" or "Dirty migration: 7"
+func extractDirtyVersion(errMsg string) int {
+	for _, prefix := range []string{"Dirty database version ", "Dirty migration: "} {
+		idx := strings.Index(errMsg, prefix)
+		if idx >= 0 {
+			rest := errMsg[idx+len(prefix):]
+			// version ends at space, period, or end of string
+			for i, c := range rest {
+				if c == ' ' || c == '.' || c == ':' {
+					ver, err := strconv.Atoi(rest[:i])
+					if err == nil {
+						return ver
+					}
+					break
+				}
+			}
+		}
+	}
+	return 0
+}
+
 func main() {
 	godotenv.Load("../.env")
 
@@ -54,12 +76,17 @@ func main() {
 	}
 
 	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-		if strings.Contains(err.Error(), "Dirty migration:") {
-			log.Printf("found dirty migration, forcing clean: %v", err)
-			if fErr := m.Force(0); fErr != nil {
-				log.Fatalf("migrate force: %v", fErr)
-			}
-			if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+		if strings.Contains(err.Error(), "Dirty") {
+			ver := extractDirtyVersion(err.Error())
+			if ver > 0 {
+				log.Printf("found dirty migration at version %d, marking clean", ver)
+				if fErr := m.Force(ver); fErr != nil {
+					log.Fatalf("migrate force %d: %v", ver, fErr)
+				}
+				if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+					log.Fatalf("migrate up: %v", err)
+				}
+			} else {
 				log.Fatalf("migrate up: %v", err)
 			}
 		} else {
