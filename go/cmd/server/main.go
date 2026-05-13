@@ -13,7 +13,6 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/joho/godotenv"
 	"github.com/madhav165/dhan-test/go/internal/broker"
-	"github.com/madhav165/dhan-test/go/internal/seed"
 	"github.com/madhav165/dhan-test/go/internal/chart"
 	"github.com/madhav165/dhan-test/go/internal/db"
 	"github.com/madhav165/dhan-test/go/internal/instrument"
@@ -56,8 +55,6 @@ func main() {
 		log.Fatalf("migrate up: %v", err)
 	}
 	log.Println("migrations up to date")
-
-	seed.Run(database)
 
 	keyHex := os.Getenv("ENCRYPTION_KEY")
 	key, err := hex.DecodeString(keyHex)

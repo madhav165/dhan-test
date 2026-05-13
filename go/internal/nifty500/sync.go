@@ -66,6 +66,20 @@ func downloadAndSync(db *sql.DB) error {
 	}
 	defer tx.Rollback()
 
+	// Archive current live constituents into snapshots before wiping
+	if _, err := tx.Exec(`
+		insert into nifty500_snapshots (snapshot_date, symbol, company_name, industry, series, isin)
+		select current_date, symbol, company_name, industry, series, isin
+		from nifty500_constituents
+		on conflict (symbol, snapshot_date) do update set
+			company_name = excluded.company_name,
+			industry = excluded.industry,
+			series = excluded.series,
+			isin = excluded.isin
+	`); err != nil {
+		return fmt.Errorf("archive to snapshots: %w", err)
+	}
+
 	// Clear and re-insert for simplicity (NIFTY 500 list changes infrequently)
 	if _, err := tx.Exec(`delete from nifty500_constituents`); err != nil {
 		return err
@@ -103,35 +117,12 @@ func downloadAndSync(db *sql.DB) error {
 	return tx.Commit()
 }
 
-func syncExtended(db *sql.DB) error {
-	_, err := db.Exec(`
-		insert into nse500_extended (symbol, company_name, industry, series, isin, last_synced)
-		select symbol, company_name, industry, series, isin, now()
-		from nifty500_constituents
-		on conflict (symbol) do update set
-			company_name = excluded.company_name,
-			industry = excluded.industry,
-			series = excluded.series,
-			isin = excluded.isin,
-			last_synced = now()
-	`)
-	if err != nil {
-		return fmt.Errorf("upsert: %w", err)
-	}
-	return nil
-}
-
 func RunScheduler(db *sql.DB) {
 	if !alreadySyncedThisWeek(db) {
 		log.Println("nifty500: syncing now")
 		if err := downloadAndSync(db); err != nil {
 			log.Printf("nifty500: sync failed: %v", err)
 		} else {
-			if err := syncExtended(db); err != nil {
-				log.Printf("nse500_extended: upsert failed: %v", err)
-			} else {
-				log.Println("nse500_extended: upserted")
-			}
 			log.Println("nifty500: sync complete")
 		}
 	} else {
@@ -147,11 +138,6 @@ func RunScheduler(db *sql.DB) {
 		if err := downloadAndSync(db); err != nil {
 			log.Printf("nifty500: sync failed: %v", err)
 		} else {
-			if err := syncExtended(db); err != nil {
-				log.Printf("nse500_extended: upsert failed: %v", err)
-			} else {
-				log.Println("nse500_extended: upserted")
-			}
 			log.Println("nifty500: sync complete")
 		}
 	}
