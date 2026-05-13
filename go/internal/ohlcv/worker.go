@@ -107,10 +107,10 @@ func (w *Worker) createJobs(userID string) {
 		return
 	}
 
-	// Fetch all NSE_E stocks from nifty500_constituents joined with instruments
+	// Fetch all NSE_E stocks from nse500_extended (historical + live) joined with instruments
 	rows, err := w.DB.Query(`
 		select i.security_id, i.exchange_segment
-		from nifty500_constituents n
+		from nse500_extended n
 		join instruments i on (i.trading_symbol = n.symbol or i.custom_symbol = n.symbol)
 		where i.exchange_segment = 'NSE_E'
 		order by n.symbol

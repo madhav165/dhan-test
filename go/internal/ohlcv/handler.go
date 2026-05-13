@@ -114,7 +114,7 @@ func (w *Worker) HandleStocks(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	baseQuery := `
-		from nifty500_constituents n
+		from nse500_extended n
 		join instruments i on (i.trading_symbol = n.symbol or i.custom_symbol = n.symbol)
 		join candles c on c.security_id = i.security_id and c.exchange_segment = 'NSE_E' and c.interval = '1d'
 		` + where + `
@@ -159,7 +159,7 @@ func (w *Worker) HandleStocks(rw http.ResponseWriter, r *http.Request) {
 
 	// Distinct industries for filter dropdown
 	indRows, err := w.DB.Query(`
-		select distinct n.industry from nifty500_constituents n
+		select distinct n.industry from nse500_extended n
 		where n.industry is not null order by n.industry
 	`)
 	if err != nil {
