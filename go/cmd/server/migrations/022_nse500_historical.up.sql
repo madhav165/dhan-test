@@ -1,6 +1,6 @@
 -- NSE500 historical snapshots + extended view
 
-create table nifty500_snapshots (
+create table if not exists nifty500_snapshots (
     snapshot_date date not null,
     symbol        text not null,
     company_name  text not null,
@@ -2015,9 +2015,10 @@ values
     ('2024-02-26', 'ZOMATO', 'Zomato Ltd.', 'Consumer Services', 'EQ', 'INE758T01015'),
     ('2024-02-26', 'ZYDUSLIFE', 'Zydus Lifesciences Ltd.', 'Healthcare', 'EQ', 'INE010B01027'),
     ('2024-02-26', 'ZYDUSWELL', 'Zydus Wellness Ltd.', 'Fast Moving Consumer Goods', 'EQ', 'INE768C01010'),
-    ('2024-02-26', 'ECLERX', 'eClerx Services Ltd.', 'Services', 'EQ', 'INE738I01010');
+    ('2024-02-26', 'ECLERX', 'eClerx Services Ltd.', 'Services', 'EQ', 'INE738I01010')
+on conflict do nothing;
 
-create index idx_nifty500_snapshots_symbol on nifty500_snapshots(symbol);
+create index if not exists idx_nifty500_snapshots_symbol on nifty500_snapshots(symbol);
 
 create or replace view nse500_extended as
 select distinct on (symbol)
