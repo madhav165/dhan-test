@@ -14,4 +14,6 @@ export async function POST({ locals }: { locals: any }) {
 	if (!resp.ok && resp.status !== 204) {
 		error(502, 'Failed to trigger OHLCV jobs')
 	}
+
+	return new Response(null, { status: 200 })  
 }
